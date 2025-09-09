@@ -22,8 +22,8 @@ runs:
       uses: actions/checkout@v4
       with:
         submodules: recursive 
-      repository: ${{ inputs.target_repository }}
-      ref: ${{ inputs.target_ref }}
+        repository: ${{ inputs.target_repository }}
+        ref: ${{ inputs.target_ref }}
     - name: "Overlay current F´ revision"
       uses: actions/checkout@v4
       with:

@@ -44,7 +44,7 @@ runs:
     - name: "Install CI tooling"
       run: |
         pip3 install git+https://github.com/fprime-community/fprime-ci@devel
-        if [[ "${{ inputs.plugin_packages }}"" != "" ]]
+        if [[ "${{ inputs.plugin_packages }}" != "" ]]
         then
             pip3 install "${{ inputs.plugin_packages }}"
         fi

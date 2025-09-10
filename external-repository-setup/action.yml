@@ -35,6 +35,10 @@ runs:
         submodules: recursive
         path: ${{ inputs.fprime_location }}
         fetch-tags: true
+    - name: "Base Python"
+      run: |
+        pip install -U setuptools pip wheel
+      shell: bash
     - name: "Install requirements.txt"
       run: |
         pip3 install -r ${{ inputs.fprime_location }}/requirements.txt

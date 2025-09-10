@@ -27,7 +27,7 @@ runs:
     - name: "Overlay current F´ revision"
       uses: actions/checkout@v4
       with:
-        submodules: true
+        submodules: recursive
         path: ${{ inputs.fprime_location }}
     - name: "Install requirements.txt"
       run: |
@@ -36,4 +36,7 @@ runs:
         then
             pip3 install -r ./requirements.txt
         fi
+      shell: bash
+    - name: "Version Check"
+      run: fprime-util version-check --all-submodules
       shell: bash

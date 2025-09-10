@@ -28,11 +28,13 @@ runs:
         submodules: recursive 
         repository: ${{ inputs.target_repository }}
         ref: ${{ inputs.target_ref }}
+        fetch-tags: true
     - name: "Overlay current F´ revision"
       uses: actions/checkout@v4
       with:
         submodules: recursive
         path: ${{ inputs.fprime_location }}
+        fetch-tags: true
     - name: "Install requirements.txt"
       run: |
         pip3 install -r ${{ inputs.fprime_location }}/requirements.txt

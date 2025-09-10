@@ -15,10 +15,6 @@ inputs:
     required: false
     type: string
     default: "devel"
-  plugin_packages:
-    required: false
-    type: string
-    default: ""
 runs:
   using: "composite"
   steps:
@@ -50,10 +46,6 @@ runs:
     - name: "Install CI tooling"
       run: |
         pip3 install git+https://github.com/fprime-community/fprime-ci@devel
-        if [[ "${{ inputs.plugin_packages }}" != "" ]]
-        then
-            pip3 install "${{ inputs.plugin_packages }}"
-        fi
       shell: bash
     - name: "Version Check"
       run: |

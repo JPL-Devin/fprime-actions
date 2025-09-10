@@ -29,13 +29,14 @@ runs:
       with:
         submodules: recursive
         path: ${{ inputs.fprime_location }}
-    - name: "Install requirements.txt"
+    - name: "Install requirements.txt and CI tooling"
       run: |
         pip3 install -r ${{ inputs.fprime_location }}/requirements.txt
         if [ -f ./requirements.txt ]
         then
             pip3 install -r ./requirements.txt
         fi
+        pip3 install git+https://github.com/fprime-community/fprime-ci@devel
       shell: bash
     - name: "Version Check"
       run: fprime-util version-check --all-submodules

@@ -15,6 +15,11 @@ inputs:
     required: false
     type: string
     default: "devel"
+  stage: 
+    description: "Stage of the CI process"
+    required: false
+    default: "all"
+    type: string
 runs:
   using: "composite"
   steps:
@@ -47,6 +52,11 @@ runs:
       run: |
         pip3 install git+https://github.com/fprime-community/fprime-ci@devel
       shell: bash
+    - name: "Custom repository setup"
+      if: ${{ hashFiles('./.github/actions/setup/*') != '' }}
+      uses: ./.github/actions/setup
+      with:
+        stage: ${{ inputs.stage }}
     - name: "Version Check"
       run: |
         pip freeze

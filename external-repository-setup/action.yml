@@ -38,19 +38,23 @@ runs:
         fetch-tags: true
     - name: "Base Python"
       run: |
+        python3 -m venv ci-venv
+        . ci-venv/bin/activate
         pip install -U setuptools pip wheel
+        echo PATH=${GITHUB_WORKSPACE}/ci-venv/bin:$PATH >> $GITHUB_ENV
+        echo VIRTUAL_ENV=${GITHUB_WORKSPACE}/ci-venv >> $GITHUB_ENV
       shell: bash
     - name: "Install requirements.txt"
       run: |
-        pip3 install -r ${{ inputs.fprime_location }}/requirements.txt
+        pip install -r ${{ inputs.fprime_location }}/requirements.txt
         if [ -f ./requirements.txt ]
         then
-            pip3 install -r ./requirements.txt
+            pip install -r ./requirements.txt
         fi
       shell: bash
     - name: "Install CI tooling"
       run: |
-        pip3 install git+https://github.com/fprime-community/fprime-ci@devel
+        pip install git+https://github.com/fprime-community/fprime-ci@devel
       shell: bash
     - name: "Custom repository setup"
       if: ${{ hashFiles('./.github/actions/setup/*') != '' }}

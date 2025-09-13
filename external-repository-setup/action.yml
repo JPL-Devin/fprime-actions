@@ -24,18 +24,20 @@ runs:
   using: "composite"
   steps:
     - name: "Checkout target repository"
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         submodules: recursive 
         repository: ${{ inputs.target_repository }}
         ref: ${{ inputs.target_ref }}
         fetch-tags: true
+        persist-credentials: false
     - name: "Overlay current F´ revision"
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         submodules: recursive
         path: ${{ inputs.fprime_location }}
         fetch-tags: true
+        persist-credentials: false
     - name: "Base Python"
       run: |
         python3 -m venv ci-venv

@@ -6,6 +6,9 @@ runs:
   # Inspired by: https://github.com/apache/flink/blob/master/tools/azure-pipelines/free_disk_space.sh
   #         and: https://github.com/marketplace/actions/free-disk-space-ubuntu
   - run: |
+      echo "#######################################################"
+      echo "#### Making More Space                             ####"
+      echo "#######################################################"
       df -h
       echo "Removing and Cleaning Large Unnecessary Packages"
       sudo apt-get remove -y '^dotnet-.*'
@@ -30,5 +33,10 @@ runs:
       df -h
       echo "Pruning Docker Images"
       sudo docker image prune --all --force
+    shell: bash
   - run: |
+      echo "#######################################################"
+      echo "#### Final                                         ####"
+      echo "#######################################################"
       df -h
+    shell: bash

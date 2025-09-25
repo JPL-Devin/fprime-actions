@@ -1,0 +1,34 @@
+name: 'Make Space: Clean-Up the Image'
+description: 'A space recovery action for: Ubuntu hosts'
+runs:
+  using: "composite"
+  steps:
+  # Inspired by: https://github.com/apache/flink/blob/master/tools/azure-pipelines/free_disk_space.sh
+  #         and: https://github.com/marketplace/actions/free-disk-space-ubuntu
+  - run: |
+      df -h
+      echo "Removing and Cleaning Large Unnecessary Packages"
+      sudo apt-get remove -y '^dotnet-.*'
+      sudo apt-get remove -y 'php.*'
+      sudo apt-get remove -y '^mongodb-.*'
+      sudo apt-get remove -y '^mysql-.*'
+      sudo apt-get remove -y azure-cli google-cloud-sdk hhvm google-chrome-stable firefox powershell mono-devel libgl1-mesa-dri
+      sudo apt-get autoremove -y
+      sudo apt-get clean
+    shell: bash
+  - run: |
+      df -h
+      echo "Removing Large Unnecessary Directories"
+      sudo rm -rf /usr/share/dotnet/
+      sudo rm -rf /usr/local/.ghcup/
+      sudo rm -rf /usr/local/share/powershell
+      sudo rm -rf /usr/local/share/chromium
+      sudo rm -rf /usr/local/lib/android
+      sudo rm -rf /opt/ghc
+    shell: bash
+  - run: |
+      df -h
+      echo "Pruning Docker Images"
+      sudo docker image prune --all --force
+  - run: |
+      df -h

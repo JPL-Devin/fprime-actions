@@ -1,0 +1,28 @@
+name: 'Build with aarch64-linux toolchain'
+description: 'Build the aarch64-linux toolchain'
+inputs:
+  location:
+    required: false
+    default: /tmp/toolchain
+    description: "Installation path for the toolchain"
+  toolchain-url:
+    required: false
+    default: https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel/gcc-arm-10.2-2020.11-x86_64-aarch64-none-linux-gnu.tar.xz
+    description: URL to the aarch64 toolchain tarball.
+
+runs:
+  using: "composite"
+  steps:
+
+  - name: Setup cross-compiler
+    uses: nasa/fprime-actions/setup-aarch64-toolchain@devel
+    with:
+      location: "${{ inputs.location }}"
+      toolchain-url: "${{ inputs.toolchain-url }}"
+
+  - name: Cross compile
+    shell: bash
+    run: |
+      fprime-util generate aarch64-linux
+      fprime-util build aarch64-linux
+

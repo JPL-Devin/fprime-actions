@@ -1,0 +1,30 @@
+name: 'Setup aarch64-linux toolchain'
+description: 'Setup the aarch64-linux toolchain'
+inputs:
+  location:
+    required: false
+    default: /tmp/toolchain
+    description: "Installation path for the toolchain"
+  toolchain-url:
+    required: true
+    description: URL to the aarch64 toolchain tarball.
+
+runs:
+  using: "composite"
+  steps:
+  - name: Download and setup toolchain
+    shell: bash
+    run: |
+      set -e
+      mkdir -p "${{ inputs.location }}"
+      curl -Ls "${{ inputs.toolchain-url }}" | tar -JC "${{ inputs.location }}" --strip-components=1 -x
+      "${{ inputs.location }}/bin/aarch64-none-linux-gnu-gcc" -v
+      export "ARM_TOOLS_PATH=${{ inputs.location }}" >> $GITHUB_ENV
+      echo "${{ inputs.location }}/bin" >> $GITHUB_PATH
+
+  - name: Verify compiler is in PATH
+    shell: bash
+    run: |
+      which aarch64-none-linux-gnu-gcc
+      aarch64-none-linux-gnu-gcc -v
+

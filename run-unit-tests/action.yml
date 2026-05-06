@@ -1,0 +1,84 @@
+name: "F´ Unit Tests"
+description: "Generate, build, and run F´ unit tests"
+inputs:
+  working-directory:
+    description: "Directory to run fprime-util from"
+    required: false
+    default: "."
+  generate-args:
+    description: "Extra flags passed to fprime-util generate --ut (e.g. -DFPRIME_ENABLE_FRAMEWORK_UTS=OFF)"
+    required: false
+    default: ""
+  target-platform:
+    description: "Target platform/toolchain passed to fprime-util (e.g. native, aarch64-linux)"
+    required: false
+    default: ""
+  jobs:
+    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: "Generate UT Build Cache"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        GENERATE_ARGS: ${{ inputs.generate-args }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util generate --ut ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM}
+    - name: "Build UTs"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        JOBS_FLAG=""
+        if [ "${JOBS_INPUT}" = "random" ]; then
+          JOBS=$(( (RANDOM % 32) + 1 ))
+          JOBS_FLAG="-j${JOBS}"
+          echo "Building UTs with ${JOBS} parallel jobs (randomized 1-32)"
+        elif [ -n "${JOBS_INPUT}" ]; then
+          JOBS_FLAG="-j${JOBS_INPUT}"
+          echo "Building UTs with ${JOBS_INPUT} parallel jobs"
+        else
+          echo "Building UTs with default parallelism"
+        fi
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util build --all --ut ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM}
+    - name: "Run Unit Tests"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        CTEST_OUTPUT_ON_FAILURE: "1"
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        JOBS_FLAG=""
+        if [ "${JOBS_INPUT}" = "random" ]; then
+          JOBS=$(( (RANDOM % 32) + 1 ))
+          JOBS_FLAG="-j${JOBS}"
+          echo "Running UTs with ${JOBS} parallel jobs (randomized 1-32)"
+        elif [ -n "${JOBS_INPUT}" ]; then
+          JOBS_FLAG="-j${JOBS_INPUT}"
+          echo "Running UTs with ${JOBS_INPUT} parallel jobs"
+        else
+          echo "Running UTs with default parallelism"
+        fi
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util check --all ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM} --pass-through --output-on-failure

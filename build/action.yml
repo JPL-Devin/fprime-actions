@@ -5,8 +5,8 @@ inputs:
     description: "Directory to run fprime-util from"
     required: false
     default: "."
-  cmake-args:
-    description: "Extra flags passed to fprime-util generate (e.g. CMake defines)"
+  generate-args:
+    description: "Extra flags passed to fprime-util generate (e.g. -DFPRIME_ENABLE_FRAMEWORK_UTS=OFF)"
     required: false
     default: ""
   target-platform:
@@ -27,16 +27,28 @@ runs:
     - name: "Generate Build Cache"
       working-directory: ${{ inputs.working-directory }}
       shell: bash
-      run: fprime-util generate ${{ inputs.cmake-args }} ${{ inputs.target-platform }}
+      env:
+        GENERATE_ARGS: ${{ inputs.generate-args }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util generate ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM}
     - name: "Build"
       working-directory: ${{ inputs.working-directory }}
       shell: bash
+      env:
+        BUILD_ALL: ${{ inputs.build-all }}
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
       run: |
         ALL_FLAG=""
-        if [ "${{ inputs.build-all }}" = "true" ]; then
+        if [ "${BUILD_ALL}" = "true" ]; then
           ALL_FLAG="--all"
         fi
-        JOBS_INPUT="${{ inputs.jobs }}"
         JOBS_FLAG=""
         if [ "${JOBS_INPUT}" = "random" ]; then
           JOBS=$(( (RANDOM % 32) + 1 ))
@@ -48,4 +60,9 @@ runs:
         else
           echo "Building with default parallelism"
         fi
-        fprime-util build ${ALL_FLAG} ${JOBS_FLAG} ${{ inputs.target-platform }}
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util build ${ALL_FLAG} ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM}

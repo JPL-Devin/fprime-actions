@@ -8,17 +8,27 @@ inputs:
 runs:
   using: "composite"
   steps:
+  # macOS GitHub-hosted runners ship Homebrew Python which is marked as
+  # "externally managed" (PEP 668). This prevents pip install from working
+  # without a virtual environment. actions/setup-python creates a usable,
+  # non-Homebrew Python so subsequent pip installs succeed.
+  - name: "Setup Python (macOS)"
+    if: runner.os == 'macOS'
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.x"
   - run: git fetch --tags
     shell: bash
-  # Python path should be added at a higher level
   - run: pip3 install setuptools_scm wheel urllib3
     shell: bash
-  - run: pip3 install -U -r ${{ inputs.location }}/requirements.txt
+  - name: "Install F´ requirements"
     shell: bash
+    env:
+      FPRIME_LOCATION: ${{ inputs.location }}
+    run: pip3 install -U -r ${FPRIME_LOCATION}/requirements.txt
   - run: which fprime-util
     shell: bash
   - run: which fprime-gds
     shell: bash
   - run: which fpp-check
     shell: bash
-    

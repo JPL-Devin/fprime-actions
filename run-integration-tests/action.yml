@@ -1,0 +1,82 @@
+name: "F´ Integration Tests"
+description: "Start the GDS with flight software, run pytest integration tests, then shut down the GDS"
+inputs:
+  gds-working-directory:
+    description: "Deployment directory to start fprime-gds from (e.g. Ref/)"
+    required: true
+  test-working-directory:
+    description: "Directory to run pytest from (e.g. Ref/test/int)"
+    required: true
+  timeout:
+    description: "Timeout in seconds for the pytest run"
+    required: false
+    default: "300"
+  gds-args:
+    description: "Extra arguments passed to fprime-gds (e.g. --dictionary path)"
+    required: false
+    default: ""
+  pytest-args:
+    description: "Extra arguments passed to pytest (e.g. --deployment-config path)"
+    required: false
+    default: ""
+  startup-delay:
+    description: "Seconds to wait for GDS and flight software to start"
+    required: false
+    default: "10"
+runs:
+  using: "composite"
+  steps:
+    - name: "Start GDS"
+      working-directory: ${{ inputs.gds-working-directory }}
+      shell: bash
+      env:
+        GDS_ARGS: ${{ inputs.gds-args }}
+        STARTUP_DELAY: ${{ inputs.startup-delay }}
+      run: |
+        mkdir -p gds-logs
+        fprime-gds -g none -l gds-logs ${GDS_ARGS} \
+          > gds-logs/fprime-gds.stdout.log 2> gds-logs/fprime-gds.stderr.log &
+        GDS_PID=$!
+        echo "GDS_PID=${GDS_PID}" >> "${GITHUB_ENV}"
+
+        echo "[INFO] Waiting ${STARTUP_DELAY}s for GDS and flight software to start"
+        sleep "${STARTUP_DELAY}"
+
+        if ! ps -p ${GDS_PID} > /dev/null 2>&1; then
+          echo "::error::GDS failed to start. Logs:"
+          cat gds-logs/fprime-gds.stderr.log
+          exit 1
+        fi
+        echo "[INFO] GDS running (PID ${GDS_PID})"
+
+    - name: "Run Integration Tests"
+      working-directory: ${{ inputs.test-working-directory }}
+      shell: bash
+      env:
+        TIMEOUT_SECONDS: ${{ inputs.timeout }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
+      run: |
+        TIMEOUT_CMD="timeout"
+        if ! command -v ${TIMEOUT_CMD} > /dev/null 2>&1; then
+          TIMEOUT_CMD="gtimeout"
+        fi
+        echo "[INFO] Running pytest with ${TIMEOUT_SECONDS}s timeout"
+        ${TIMEOUT_CMD} --kill-after=10s "${TIMEOUT_SECONDS}s" pytest ${PYTEST_ARGS}
+
+    - name: "Shutdown GDS"
+      if: always()
+      shell: bash
+      run: |
+        if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
+          echo "[INFO] Stopping GDS (PID ${GDS_PID})"
+          pkill -P ${GDS_PID} 2>/dev/null || true
+          kill ${GDS_PID} 2>/dev/null || true
+          sleep 2
+          # Force-kill if still alive
+          if ps -p ${GDS_PID} > /dev/null 2>&1; then
+            kill -9 ${GDS_PID} 2>/dev/null || true
+          fi
+          echo "[INFO] GDS stopped"
+        else
+          echo "[INFO] GDS already stopped"
+        fi

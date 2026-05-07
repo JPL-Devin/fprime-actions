@@ -91,7 +91,6 @@ runs:
         echo "[INFO] GDS (PID ${GDS_PID}) and FSW (PID ${FSW_PID}) running"
 
     - name: "Run Integration Tests"
-      id: run-tests
       working-directory: ${{ inputs.test-working-directory }}
       shell: bash
       env:
@@ -112,8 +111,6 @@ runs:
       env:
         USE_VALGRIND: ${{ inputs.valgrind }}
       run: |
-        RET_PYTEST=${{ steps.run-tests.outcome == 'success' && '0' || '1' }}
-
         # Stop GDS
         if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
           echo "[INFO] Stopping GDS (PID ${GDS_PID})"

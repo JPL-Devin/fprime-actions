@@ -1,0 +1,151 @@
+name: "F´ Integration Tests"
+description: "Start GDS and flight software, run pytest integration tests, optionally check for memory leaks with valgrind"
+inputs:
+  gds-working-directory:
+    description: "Deployment directory to start fprime-gds from (e.g. Ref/)"
+    required: true
+  test-working-directory:
+    description: "Directory to run pytest from (e.g. Ref/test/int)"
+    required: true
+  binary:
+    description: "Path to the FSW binary to run (relative to gds-working-directory)"
+    required: true
+  binary-args:
+    description: "Arguments passed to the FSW binary"
+    required: false
+    default: "-a 127.0.0.1 -p 50000"
+  timeout:
+    description: "Timeout in seconds for the pytest run"
+    required: false
+    default: "300"
+  gds-args:
+    description: "Extra arguments passed to fprime-gds (e.g. --dictionary path)"
+    required: false
+    default: ""
+  pytest-args:
+    description: "Extra arguments passed to pytest (e.g. --deployment-config path)"
+    required: false
+    default: ""
+  valgrind:
+    description: "Run the FSW binary under valgrind for memory leak detection"
+    required: false
+    default: "false"
+  startup-delay:
+    description: "Seconds to wait for GDS and flight software to start"
+    required: false
+    default: "10"
+runs:
+  using: "composite"
+  steps:
+    - name: "Start GDS and Flight Software"
+      working-directory: ${{ inputs.gds-working-directory }}
+      shell: bash
+      env:
+        GDS_ARGS: ${{ inputs.gds-args }}
+        BINARY_PATH: ${{ inputs.binary }}
+        BINARY_ARGS: ${{ inputs.binary-args }}
+        STARTUP_DELAY: ${{ inputs.startup-delay }}
+        USE_VALGRIND: ${{ inputs.valgrind }}
+      run: |
+        mkdir -p gds-logs
+
+        # Start GDS headless without the app (-n); we manage the binary separately
+        fprime-gds -n -g none -l gds-logs ${GDS_ARGS} \
+          > gds-logs/fprime-gds.stdout.log 2> gds-logs/fprime-gds.stderr.log &
+        GDS_PID=$!
+        echo "GDS_PID=${GDS_PID}" >> "${GITHUB_ENV}"
+
+        # Start the FSW binary (optionally under valgrind)
+        if [ "${USE_VALGRIND}" = "true" ] && command -v valgrind > /dev/null 2>&1; then
+          echo "[INFO] Starting FSW binary under valgrind"
+          valgrind \
+            --tool=memcheck \
+            --error-exitcode=1 \
+            --leak-check=full \
+            --show-leak-kinds=all \
+            --track-origins=yes \
+            --log-file=gds-logs/valgrind.log \
+            ${BINARY_PATH} ${BINARY_ARGS} \
+            > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
+        else
+          echo "[INFO] Starting FSW binary"
+          ${BINARY_PATH} ${BINARY_ARGS} \
+            > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
+        fi
+        FSW_PID=$!
+        echo "FSW_PID=${FSW_PID}" >> "${GITHUB_ENV}"
+
+        echo "[INFO] Waiting ${STARTUP_DELAY}s for GDS and FSW to start"
+        sleep "${STARTUP_DELAY}"
+
+        if ! ps -p ${GDS_PID} > /dev/null 2>&1; then
+          echo "::error::GDS failed to start. Logs:"
+          cat gds-logs/fprime-gds.stderr.log
+          exit 1
+        fi
+        if ! ps -p ${FSW_PID} > /dev/null 2>&1; then
+          echo "::error::FSW binary failed to start. Logs:"
+          cat gds-logs/fsw.stderr.log
+          exit 1
+        fi
+        echo "[INFO] GDS (PID ${GDS_PID}) and FSW (PID ${FSW_PID}) running"
+
+    - name: "Run Integration Tests"
+      working-directory: ${{ inputs.test-working-directory }}
+      shell: bash
+      env:
+        TIMEOUT_SECONDS: ${{ inputs.timeout }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
+      run: |
+        TIMEOUT_CMD="timeout"
+        if ! command -v ${TIMEOUT_CMD} > /dev/null 2>&1; then
+          TIMEOUT_CMD="gtimeout"
+        fi
+        echo "[INFO] Running pytest with ${TIMEOUT_SECONDS}s timeout"
+        ${TIMEOUT_CMD} --kill-after=10s "${TIMEOUT_SECONDS}s" pytest ${PYTEST_ARGS}
+
+    - name: "Shutdown and Check Results"
+      if: always()
+      working-directory: ${{ inputs.gds-working-directory }}
+      shell: bash
+      env:
+        USE_VALGRIND: ${{ inputs.valgrind }}
+      run: |
+        # Stop GDS
+        if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
+          echo "[INFO] Stopping GDS (PID ${GDS_PID})"
+          pkill -P ${GDS_PID} 2>/dev/null || true
+          kill ${GDS_PID} 2>/dev/null || true
+        fi
+
+        # Stop FSW/valgrind and capture exit code
+        RET_MEMTEST=0
+        if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
+          echo "[INFO] Stopping FSW (PID ${FSW_PID})"
+          pkill -P ${FSW_PID} 2>/dev/null || true
+          kill ${FSW_PID} 2>/dev/null || true
+          wait ${FSW_PID} 2>/dev/null || RET_MEMTEST=$?
+        fi
+
+        sleep 2
+
+        # Force-kill any remaining processes
+        if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
+          kill -9 ${GDS_PID} 2>/dev/null || true
+        fi
+        if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
+          kill -9 ${FSW_PID} 2>/dev/null || true
+        fi
+
+        # Report valgrind results if enabled
+        if [ "${USE_VALGRIND}" = "true" ] && [ ${RET_MEMTEST} -ne 0 ]; then
+          echo "::error::Valgrind detected memory leaks (exit code ${RET_MEMTEST})"
+          if [ -f gds-logs/valgrind.log ]; then
+            echo "::group::Valgrind Log"
+            cat gds-logs/valgrind.log
+            echo "::endgroup::"
+          fi
+          exit 1
+        fi
+
+        echo "[INFO] Cleanup complete"

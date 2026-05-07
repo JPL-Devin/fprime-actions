@@ -118,13 +118,11 @@ runs:
           kill ${GDS_PID} 2>/dev/null || true
         fi
 
-        # Stop FSW/valgrind and capture exit code
-        RET_MEMTEST=0
+        # Stop FSW/valgrind
         if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
           echo "[INFO] Stopping FSW (PID ${FSW_PID})"
           pkill -P ${FSW_PID} 2>/dev/null || true
           kill ${FSW_PID} 2>/dev/null || true
-          wait ${FSW_PID} 2>/dev/null || RET_MEMTEST=$?
         fi
 
         sleep 2
@@ -137,15 +135,17 @@ runs:
           kill -9 ${FSW_PID} 2>/dev/null || true
         fi
 
-        # Report valgrind results if enabled
-        if [ "${USE_VALGRIND}" = "true" ] && [ ${RET_MEMTEST} -ne 0 ]; then
-          echo "::error::Valgrind detected memory leaks (exit code ${RET_MEMTEST})"
-          if [ -f gds-logs/valgrind.log ]; then
+        # Check valgrind log for errors (can't use wait across steps)
+        if [ "${USE_VALGRIND}" = "true" ] && [ -f gds-logs/valgrind.log ]; then
+          VALGRIND_ERRORS=$(grep "ERROR SUMMARY:" gds-logs/valgrind.log | awk '{print $4}' || echo "0")
+          if [ "${VALGRIND_ERRORS}" -gt 0 ]; then
+            echo "::error::Valgrind detected ${VALGRIND_ERRORS} error(s)"
             echo "::group::Valgrind Log"
             cat gds-logs/valgrind.log
             echo "::endgroup::"
+            exit 1
           fi
-          exit 1
+          echo "[INFO] Valgrind: no errors detected"
         fi
 
         echo "[INFO] Cleanup complete"

@@ -2,9 +2,9 @@ name: 'Setup F´'
 description: 'Setup the F´ repository and tools'
 inputs:
   location:
-    required: true
-    default: $GITHUB_WORKSPACE
-    description: "Path to the root of the F´ repository"
+    required: false
+    default: ""
+    description: "Path to the root of the F´ repository (defaults to $GITHUB_WORKSPACE)"
 runs:
   using: "composite"
   steps:
@@ -25,7 +25,7 @@ runs:
     shell: bash
     env:
       FPRIME_LOCATION: ${{ inputs.location }}
-    run: pip3 install -U -r ${FPRIME_LOCATION}/requirements.txt
+    run: pip3 install -U -r ${FPRIME_LOCATION:-${GITHUB_WORKSPACE}}/requirements.txt
   - run: which fprime-util
     shell: bash
   - run: which fprime-gds

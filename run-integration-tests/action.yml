@@ -50,27 +50,12 @@ runs:
         TIMEOUT_SECONDS: ${{ inputs.timeout }}
         PYTEST_ARGS: ${{ inputs.pytest-args }}
       run: |
-        cd "${GDS_WORKING_DIR}"
+        cd "${GITHUB_WORKSPACE}/${GDS_WORKING_DIR}"
         mkdir -p gds-logs
 
-        # Cleanup handler — runs on exit regardless of success/failure
+        # Ensure GDS and FSW are killed on any exit (failure, timeout, success)
         cleanup() {
-          echo "[INFO] Cleaning up processes"
-          if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
-            pkill -P ${GDS_PID} 2>/dev/null || true
-            kill ${GDS_PID} 2>/dev/null || true
-          fi
-          if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
-            pkill -P ${FSW_PID} 2>/dev/null || true
-            kill ${FSW_PID} 2>/dev/null || true
-          fi
-          sleep 2
-          if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
-            kill -9 ${GDS_PID} 2>/dev/null || true
-          fi
-          if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
-            kill -9 ${FSW_PID} 2>/dev/null || true
-          fi
+          kill ${GDS_PID} ${FSW_PID} 2>/dev/null || true
         }
         trap cleanup EXIT
 

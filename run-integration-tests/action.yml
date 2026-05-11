@@ -37,23 +37,32 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: "Start GDS and Flight Software"
-      working-directory: ${{ inputs.gds-working-directory }}
+    - name: "Integration Tests"
       shell: bash
       env:
+        GDS_WORKING_DIR: ${{ inputs.gds-working-directory }}
+        TEST_WORKING_DIR: ${{ inputs.test-working-directory }}
         GDS_ARGS: ${{ inputs.gds-args }}
         BINARY_PATH: ${{ inputs.binary }}
         BINARY_ARGS: ${{ inputs.binary-args }}
         STARTUP_DELAY: ${{ inputs.startup-delay }}
         USE_VALGRIND: ${{ inputs.valgrind }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
       run: |
+        cd "${GITHUB_WORKSPACE}/${GDS_WORKING_DIR}"
         mkdir -p gds-logs
+
+        # Ensure GDS and FSW are killed on any exit (failure, timeout, success)
+        cleanup() {
+          kill ${GDS_PID} ${FSW_PID} 2>/dev/null || true
+        }
+        trap cleanup EXIT
 
         # Start GDS headless without the app (-n); we manage the binary separately
         fprime-gds -n -g none -l gds-logs ${GDS_ARGS} \
           > gds-logs/fprime-gds.stdout.log 2> gds-logs/fprime-gds.stderr.log &
         GDS_PID=$!
-        echo "GDS_PID=${GDS_PID}" >> "${GITHUB_ENV}"
 
         # Start the FSW binary (optionally under valgrind)
         if [ "${USE_VALGRIND}" = "true" ] && command -v valgrind > /dev/null 2>&1; then
@@ -73,7 +82,6 @@ runs:
             > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
         fi
         FSW_PID=$!
-        echo "FSW_PID=${FSW_PID}" >> "${GITHUB_ENV}"
 
         echo "[INFO] Waiting ${STARTUP_DELAY}s for GDS and FSW to start"
         sleep "${STARTUP_DELAY}"
@@ -90,56 +98,33 @@ runs:
         fi
         echo "[INFO] GDS (PID ${GDS_PID}) and FSW (PID ${FSW_PID}) running"
 
-    - name: "Run Integration Tests"
-      working-directory: ${{ inputs.test-working-directory }}
-      shell: bash
-      env:
-        TIMEOUT_SECONDS: ${{ inputs.timeout }}
-        PYTEST_ARGS: ${{ inputs.pytest-args }}
-      run: |
+        # Run integration tests
         TIMEOUT_CMD="timeout"
         if ! command -v ${TIMEOUT_CMD} > /dev/null 2>&1; then
           TIMEOUT_CMD="gtimeout"
         fi
         echo "[INFO] Running pytest with ${TIMEOUT_SECONDS}s timeout"
+        cd "${GITHUB_WORKSPACE}/${TEST_WORKING_DIR}"
         ${TIMEOUT_CMD} --kill-after=10s "${TIMEOUT_SECONDS}s" pytest ${PYTEST_ARGS}
+        RET_PYTEST=$?
+        cd "${GITHUB_WORKSPACE}/${GDS_WORKING_DIR}"
 
-    - name: "Shutdown and Check Results"
-      if: always()
-      working-directory: ${{ inputs.gds-working-directory }}
-      shell: bash
-      env:
-        USE_VALGRIND: ${{ inputs.valgrind }}
-      run: |
-        # Stop GDS
-        if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
-          echo "[INFO] Stopping GDS (PID ${GDS_PID})"
-          pkill -P ${GDS_PID} 2>/dev/null || true
-          kill ${GDS_PID} 2>/dev/null || true
-        fi
-
-        # Stop FSW/valgrind and capture exit code
-        RET_MEMTEST=0
-        if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
+        # Stop FSW and capture valgrind exit code via wait (same shell context)
+        if ps -p ${FSW_PID} > /dev/null 2>&1; then
           echo "[INFO] Stopping FSW (PID ${FSW_PID})"
-          pkill -P ${FSW_PID} 2>/dev/null || true
           kill ${FSW_PID} 2>/dev/null || true
-          wait ${FSW_PID} 2>/dev/null || RET_MEMTEST=$?
+        fi
+        wait ${FSW_PID} 2>/dev/null
+        RET_VALGRIND=$?
+
+        # Report results
+        if [ ${RET_PYTEST} -ne 0 ]; then
+          echo "::error::Integration tests failed (exit code ${RET_PYTEST})"
+          exit ${RET_PYTEST}
         fi
 
-        sleep 2
-
-        # Force-kill any remaining processes
-        if [ -n "${GDS_PID}" ] && ps -p ${GDS_PID} > /dev/null 2>&1; then
-          kill -9 ${GDS_PID} 2>/dev/null || true
-        fi
-        if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
-          kill -9 ${FSW_PID} 2>/dev/null || true
-        fi
-
-        # Report valgrind results if enabled
-        if [ "${USE_VALGRIND}" = "true" ] && [ ${RET_MEMTEST} -ne 0 ]; then
-          echo "::error::Valgrind detected memory leaks (exit code ${RET_MEMTEST})"
+        if [ "${USE_VALGRIND}" = "true" ] && [ ${RET_VALGRIND} -ne 0 ]; then
+          echo "::error::Valgrind detected memory errors (exit code ${RET_VALGRIND})"
           if [ -f gds-logs/valgrind.log ]; then
             echo "::group::Valgrind Log"
             cat gds-logs/valgrind.log
@@ -148,4 +133,4 @@ runs:
           exit 1
         fi
 
-        echo "[INFO] Cleanup complete"
+        echo "[INFO] Integration tests passed"

@@ -64,6 +64,7 @@ runs:
             --leak-check=full \
             --show-leak-kinds=all \
             --track-origins=yes \
+            --track-fds=all \
             --log-file=gds-logs/valgrind.log \
             ${BINARY_PATH} ${BINARY_ARGS} \
             > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
@@ -118,13 +119,11 @@ runs:
           kill ${GDS_PID} 2>/dev/null || true
         fi
 
-        # Stop FSW/valgrind and capture exit code
-        RET_MEMTEST=0
+        # Stop FSW/valgrind
         if [ -n "${FSW_PID}" ] && ps -p ${FSW_PID} > /dev/null 2>&1; then
           echo "[INFO] Stopping FSW (PID ${FSW_PID})"
           pkill -P ${FSW_PID} 2>/dev/null || true
           kill ${FSW_PID} 2>/dev/null || true
-          wait ${FSW_PID} 2>/dev/null || RET_MEMTEST=$?
         fi
 
         sleep 2
@@ -137,15 +136,33 @@ runs:
           kill -9 ${FSW_PID} 2>/dev/null || true
         fi
 
-        # Report valgrind results if enabled
-        if [ "${USE_VALGRIND}" = "true" ] && [ ${RET_MEMTEST} -ne 0 ]; then
-          echo "::error::Valgrind detected memory leaks (exit code ${RET_MEMTEST})"
-          if [ -f gds-logs/valgrind.log ]; then
+        # Check valgrind results by parsing the log file
+        # (can't use 'wait' across composite action steps — separate shell contexts)
+        if [ "${USE_VALGRIND}" = "true" ] && [ -f gds-logs/valgrind.log ]; then
+          VALGRIND_FAIL=0
+
+          # Check for memory errors (ERROR SUMMARY: N errors)
+          VALGRIND_ERRORS=$(grep -oP 'ERROR SUMMARY: \K[0-9]+' gds-logs/valgrind.log | head -1 || echo "0")
+          if [ "${VALGRIND_ERRORS}" -gt 0 ] 2>/dev/null; then
+            echo "::error::Valgrind detected ${VALGRIND_ERRORS} memory error(s)"
+            VALGRIND_FAIL=1
+          fi
+
+          # Check for invalid file descriptor warnings
+          FD_WARNINGS=$(grep -c 'Warning: invalid file descriptor' gds-logs/valgrind.log || echo "0")
+          if [ "${FD_WARNINGS}" -gt 0 ] 2>/dev/null; then
+            echo "::error::Valgrind detected ${FD_WARNINGS} invalid file descriptor warning(s)"
+            VALGRIND_FAIL=1
+          fi
+
+          if [ ${VALGRIND_FAIL} -ne 0 ]; then
             echo "::group::Valgrind Log"
             cat gds-logs/valgrind.log
             echo "::endgroup::"
+            exit 1
           fi
-          exit 1
+
+          echo "[INFO] Valgrind: no errors or warnings detected"
         fi
 
         echo "[INFO] Cleanup complete"

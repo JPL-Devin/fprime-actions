@@ -132,8 +132,10 @@ runs:
         elif [ -n "${JOBS_INPUT}" ]; then
           JOBS_FLAG="-j${JOBS_INPUT}"
         fi
+        # NOTE: everything after --pass-through is forwarded to gcovr, NOT to
+        # ctest, so do not append ctest flags (e.g. --output-on-failure) here.
         fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
-          --pass-through --json-summary coverage/summary.json --output-on-failure
+          --pass-through --json-summary coverage/summary.json
 
     - name: "Per-module coverage"
       working-directory: ${{ inputs.working-directory }}
@@ -156,7 +158,7 @@ runs:
           (
             cd "$MOD"
             fprime-util check --coverage ${TARGET_PLATFORM} \
-              --pass-through --json-summary coverage/summary.json --output-on-failure
+              --pass-through --json-summary coverage/summary.json
             if [ -f coverage/coverage.html ]; then
               mv coverage/coverage.html coverage/index.html
             fi

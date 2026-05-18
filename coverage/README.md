@@ -4,26 +4,41 @@ Composite action that generates per-module and global gcovr coverage for an F´
 project, stores it in a per-base-branch orphan branch (`coverage/<ref>`), and
 posts a per-module delta comment on pull requests.
 
+## Prerequisites
+
+This action assumes the caller has **already generated and built** the UT
+build cache. Use the `run-unit-tests` action with `run-check: 'false'` before
+calling this action:
+
+```yaml
+- uses: nasa/fprime-actions/run-unit-tests@devel
+  with:
+    run-check: 'false'
+    jobs: ${{ ... }}
+- uses: nasa/fprime-actions/coverage@devel
+```
+
+gcovr is expected to be available on the runner (it is installed by
+`fprime-tools`'s pip dependencies via the `setup` action).
+
 ## What it does
 
 On every run:
 
-1. Generates and builds the unit-test build cache (`fprime-util generate --ut`
-   then `fprime-util build --all --ut`).
-2. Discovers F´ modules by grepping every `CMakeLists.txt` under
+1. Discovers F´ modules by grepping every `CMakeLists.txt` under
    `working-directory` for `register_fprime_module(`. Modules that also call
    `register_fprime_ut(` are eligible for coverage.
-3. Runs `fprime-util check --all --coverage` once for the global headline
+2. Runs `fprime-util check --all --coverage` once for the global headline
    number, then `fprime-util check --coverage` in each discovered module.
    gcovr's `--json-summary` is captured at each location.
-4. Renames each module's `coverage.html` to `index.html`. The global
+3. Renames each module's `coverage.html` to `index.html`. The global
    `coverage-all.html` is **not** renamed.
-5. Modules that produced no coverage data (no UT, or gcovr emitted nothing)
+4. Modules that produced no coverage data (no UT, or gcovr emitted nothing)
    get a placeholder `index.html` so catalog links never 404.
 
 On **push events** (`devel`, `release/**`, tags), additionally:
 
-6. Writes/updates an orphan branch `<baseline-branch-prefix>/<ref-name>` (e.g.
+5. Writes/updates an orphan branch `<baseline-branch-prefix>/<ref-name>` (e.g.
    `coverage/devel`, `coverage/release/v4.2.0`, `coverage/v4.2.0`) containing
    the per-module + global outputs mirrored to the same directory layout as
    the working tree, plus a top-level `index.html` folder-tree catalog and a
@@ -31,7 +46,7 @@ On **push events** (`devel`, `release/**`, tags), additionally:
 
 On **pull-request events**, additionally:
 
-6. Fetches the baseline branch matching the PR's base (`coverage/<base_ref>`),
+5. Fetches the baseline branch matching the PR's base (`coverage/<base_ref>`),
    computes per-module line/branch deltas, and posts a sticky PR comment
    sorted by worst regression first. If the baseline branch does not exist
    yet (no push to the base branch has seeded it), the comment explicitly
@@ -44,15 +59,13 @@ The PR job never pushes to any baseline branch.
 | Input                     | Default                                 | Description                                                                                                  |
 |---------------------------|-----------------------------------------|--------------------------------------------------------------------------------------------------------------|
 | `working-directory`       | `.`                                     | Directory to run `fprime-util` from.                                                                         |
-| `generate-args`           | `""`                                    | Extra flags passed to `fprime-util generate --ut`.                                                            |
 | `target-platform`         | `""`                                    | Target platform/toolchain passed to `fprime-util`.                                                            |
-| `jobs`                    | `""`                                    | Parallel job count for build/check. `random` picks 1-32 each run; empty omits `-j`.                          |
+| `jobs`                    | `""`                                    | Parallel job count for check. `random` picks 1-32 each run; empty omits `-j`.                                |
 | `baseline-branch-prefix`  | `coverage`                              | Prefix applied to `<ref-name>` to form the baseline branch (`<prefix>/<ref>`).                               |
 | `coverage-subdirectory`   | `coverage`                              | Subdirectory inside each module's baseline-branch entry. Set to `""` to flatten (drop the shadow folder).    |
 | `regression-threshold`    | `0.5`                                   | Percentage points of line-coverage drop tolerated per module on PRs.                                          |
 | `fail-on-regression`      | `false`                                 | If `true`, the PR job exits non-zero when any module regresses beyond `regression-threshold`.                |
 | `comment-marker`          | `<!-- fprime-coverage-comment -->`      | Hidden HTML marker used to find and edit the sticky PR comment.                                              |
-| `install-gcovr`           | `true`                                  | If `true`, the action runs `pip install --upgrade gcovr` before generating coverage.                          |
 
 ## Outputs
 
@@ -129,20 +142,35 @@ on:
     branches: [devel, release/**]
   workflow_dispatch:
 
-permissions:
-  contents: write          # to push to coverage/<ref>
-  pull-requests: write     # to post the PR comment
-
 jobs:
-  coverage:
+  coverage-pr:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0, submodules: true }
       - uses: nasa/fprime-actions/setup@devel
+      - uses: nasa/fprime-actions/run-unit-tests@devel
+        with: { run-check: 'false', jobs: random }
       - uses: nasa/fprime-actions/coverage@devel
-        # All defaults: regression-threshold=0.5, fail-on-regression=false (comment-only)
+
+  coverage-push:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, submodules: true }
+      - uses: nasa/fprime-actions/setup@devel
+      - uses: nasa/fprime-actions/run-unit-tests@devel
+        with: { run-check: 'false', jobs: random }
+      - uses: nasa/fprime-actions/coverage@devel
 ```
 
 To enable the regression gate later, flip a single input:
@@ -165,10 +193,12 @@ To seed manually before opening any PRs, run the workflow via
 
 ## Development
 
-The action ships three Python helpers under `coverage/scripts/`:
+The action ships Python helpers under `coverage/scripts/`:
 
 * `discover.py` &mdash; emits JSON-Lines of `{path, has_ut}` for each
   module under the working directory.
+* `run_coverage.py` &mdash; runs `fprime-util check --coverage` in each
+  discovered module with UTs; renames `coverage.html` to `index.html`.
 * `mirror.py` &mdash; copies coverage outputs into the baseline worktree,
   writes placeholder pages for modules without coverage, and invokes
   `catalog.py`.

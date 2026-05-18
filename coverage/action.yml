@@ -2,16 +2,13 @@ name: "F´ Coverage"
 description: >
   Generate per-module + global gcovr coverage, store it in a per-base-branch
   orphan branch (coverage/<ref>), and compare PR head against the matching
-  baseline.
+  baseline.  Assumes the caller has already run generate + build (e.g. via
+  the run-unit-tests action with run-check: 'false').
 inputs:
   working-directory:
     description: "Directory to run fprime-util from"
     required: false
     default: "."
-  generate-args:
-    description: "Extra flags passed to fprime-util generate --ut"
-    required: false
-    default: ""
   target-platform:
     description: "Target platform/toolchain passed to fprime-util (e.g. native)"
     required: false
@@ -46,10 +43,6 @@ inputs:
     description: "Hidden HTML marker used to find and edit the sticky PR comment"
     required: false
     default: "<!-- fprime-coverage-comment -->"
-  install-gcovr:
-    description: "If true (default), install gcovr via pip"
-    required: false
-    default: "true"
 
 outputs:
   catalog-path:
@@ -65,48 +58,6 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: "Install gcovr"
-      if: inputs.install-gcovr == 'true'
-      shell: bash
-      run: |
-        python3 -m pip install --upgrade gcovr
-        gcovr --version
-
-    - name: "Generate UT build cache"
-      working-directory: ${{ inputs.working-directory }}
-      shell: bash
-      env:
-        GENERATE_ARGS: ${{ inputs.generate-args }}
-        TARGET_PLATFORM: ${{ inputs.target-platform }}
-      run: |
-        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
-          VERBOSE_FLAG=--verbose
-        else
-          VERBOSE_FLAG=
-        fi
-        fprime-util generate --ut ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM}
-
-    - name: "Build UTs"
-      working-directory: ${{ inputs.working-directory }}
-      shell: bash
-      env:
-        JOBS_INPUT: ${{ inputs.jobs }}
-        TARGET_PLATFORM: ${{ inputs.target-platform }}
-      run: |
-        JOBS_FLAG=""
-        if [ "${JOBS_INPUT}" = "random" ]; then
-          JOBS=$(( (RANDOM % 32) + 1 ))
-          JOBS_FLAG="-j${JOBS}"
-        elif [ -n "${JOBS_INPUT}" ]; then
-          JOBS_FLAG="-j${JOBS_INPUT}"
-        fi
-        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
-          VERBOSE_FLAG=--verbose
-        else
-          VERBOSE_FLAG=
-        fi
-        fprime-util build --all --ut ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM}
-
     - name: "Discover modules"
       id: discover
       working-directory: ${{ inputs.working-directory }}
@@ -132,8 +83,6 @@ runs:
         elif [ -n "${JOBS_INPUT}" ]; then
           JOBS_FLAG="-j${JOBS_INPUT}"
         fi
-        # NOTE: everything after --pass-through is forwarded to gcovr, NOT to
-        # ctest, so do not append ctest flags (e.g. --output-on-failure) here.
         fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
           --pass-through --json-summary coverage/summary.json
 
@@ -141,33 +90,14 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
       run: |
-        set -e
-        FAILED=0
-        while IFS= read -r line; do
-          [ -z "$line" ] && continue
-          MOD=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['path'])" "$line")
-          HAS_UT=$(python3 -c "import json,sys;print('1' if json.loads(sys.argv[1]).get('has_ut') else '0')" "$line")
-          if [ "$HAS_UT" != "1" ]; then
-            echo "[skip] $MOD (no register_fprime_ut)"
-            continue
-          fi
-          echo "[cover] $MOD"
-          (
-            cd "$MOD"
-            fprime-util check --coverage ${TARGET_PLATFORM} \
-              --pass-through --json-summary coverage/summary.json
-            if [ -f coverage/coverage.html ]; then
-              mv coverage/coverage.html coverage/index.html
-            fi
-          ) || FAILED=$((FAILED+1))
-        done < "$MODULES_JSONL"
-        if [ "$FAILED" -gt 0 ]; then
-          echo "Coverage failed in $FAILED module(s)." >&2
-          exit 1
-        fi
+        python3 "${ACTION_PATH}/scripts/run_coverage.py" \
+          --root . \
+          --modules-jsonl "$MODULES_JSONL" \
+          --target-platform "${TARGET_PLATFORM}"
 
     - name: "Compute ref / ref-type / base-ref"
       id: ref
@@ -179,7 +109,6 @@ runs:
         BASE_REF: ${{ github.base_ref }}
       run: |
         if [ "$EVENT_NAME" = "pull_request" ]; then
-          # On PRs we never push; only the base-ref matters.
           echo "is-push=false" >> "$GITHUB_OUTPUT"
           echo "base-ref=$BASE_REF" >> "$GITHUB_OUTPUT"
           echo "ref-type=branch" >> "$GITHUB_OUTPUT"
@@ -330,15 +259,3 @@ runs:
           git -C "$BASELINE_DIR" commit -m "coverage: ${SHORT_SHA} ${SUBJECT}"
           git -C "$BASELINE_DIR" push origin "$BASELINE_BRANCH"
         fi
-
-    - name: "Upload coverage artifacts"
-      if: always() && steps.discover.outcome == 'success'
-      uses: actions/upload-artifact@v4
-      with:
-        name: fprime-coverage-${{ github.run_id }}
-        if-no-files-found: ignore
-        path: |
-          ${{ inputs.working-directory }}/coverage/**
-          ${{ inputs.working-directory }}/**/coverage/summary.json
-          ${{ inputs.working-directory }}/**/coverage/index.html
-          ${{ inputs.working-directory }}/**/coverage/coverage.*.html

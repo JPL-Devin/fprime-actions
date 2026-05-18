@@ -17,6 +17,10 @@ inputs:
     description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
     required: false
     default: ""
+  run-check:
+    description: "If 'true' (default), run the unit tests after generating and building. Set to 'false' to only generate and build (useful when the coverage action will run tests with gcovr instead)."
+    required: false
+    default: "true"
 runs:
   using: "composite"
   steps:
@@ -58,6 +62,7 @@ runs:
         fi
         fprime-util build --all --ut ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM}
     - name: "Run Unit Tests"
+      if: inputs.run-check == 'true'
       working-directory: ${{ inputs.working-directory }}
       shell: bash
       env:

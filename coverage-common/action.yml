@@ -1,0 +1,68 @@
+name: "F´ Coverage (common)"
+description: >
+  Shared coverage generation used by coverage-check (PR-only) and
+  coverage-update (push-only).  Discovers F´ modules, runs gcovr globally
+  and per-module, and renames each module's coverage.html to index.html.
+  Assumes the caller has already run generate + build (e.g. via the
+  run-unit-tests action with run-check: 'false').
+inputs:
+  working-directory:
+    description: "Directory to run fprime-util from"
+    required: false
+    default: "."
+  target-platform:
+    description: "Target platform/toolchain passed to fprime-util (e.g. native)"
+    required: false
+    default: ""
+  jobs:
+    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
+    required: false
+    default: ""
+outputs:
+  modules-jsonl:
+    description: "Path to the JSON-Lines file listing discovered modules"
+    value: ${{ steps.discover.outputs.modules-jsonl }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Discover modules"
+      id: discover
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        python3 "${ACTION_PATH}/scripts/discover.py" --root . > modules.jsonl
+        echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
+        echo "Discovered $(wc -l < modules.jsonl) modules"
+
+    - name: "Global coverage (fprime-util check --all --coverage)"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        JOBS_FLAG=""
+        if [ "${JOBS_INPUT}" = "random" ]; then
+          JOBS=$(( (RANDOM % 32) + 1 ))
+          JOBS_FLAG="-j${JOBS}"
+        elif [ -n "${JOBS_INPUT}" ]; then
+          JOBS_FLAG="-j${JOBS_INPUT}"
+        fi
+        fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
+          --pass-through --json-summary coverage/summary.json
+
+    - name: "Per-module coverage"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+      run: |
+        python3 "${ACTION_PATH}/scripts/run_coverage.py" \
+          --root . \
+          --modules-jsonl "$MODULES_JSONL" \
+          --target-platform "${TARGET_PLATFORM}"

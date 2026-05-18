@@ -1,0 +1,148 @@
+name: "F´ Coverage (check)"
+description: >
+  Generate per-module + global gcovr coverage and compare against the
+  matching coverage/<base_ref> baseline branch, then post a sticky comment
+  on the pull request.  Intended to run on pull_request events with
+  permissions: { contents: read, pull-requests: write }.
+inputs:
+  working-directory:
+    description: "Directory to run fprime-util from"
+    required: false
+    default: "."
+  target-platform:
+    description: "Target platform/toolchain passed to fprime-util (e.g. native)"
+    required: false
+    default: ""
+  jobs:
+    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
+    required: false
+    default: ""
+  baseline-branch-prefix:
+    description: "Prefix applied to <base-ref> to form the baseline branch name"
+    required: false
+    default: "coverage"
+  coverage-subdirectory:
+    description: >
+      Subdirectory under each module in the baseline branch holding coverage
+      artifacts (summary.json, index.html, coverage.*.html).  Set to "" to
+      flatten so paths become <module>/index.html instead of
+      <module>/coverage/index.html.
+    required: false
+    default: "coverage"
+  regression-threshold:
+    description: "Percentage points of line coverage drop tolerated per module"
+    required: false
+    default: "0.5"
+  fail-on-regression:
+    description: "If true, fail the job when any module regresses beyond threshold"
+    required: false
+    default: "false"
+  comment-marker:
+    description: "Hidden HTML marker used to find and edit the sticky PR comment"
+    required: false
+    default: "<!-- fprime-coverage-comment -->"
+
+outputs:
+  comment-path:
+    description: "Absolute path to the PR comment markdown"
+    value: ${{ steps.compare.outputs.comment-path }}
+  regressions-json-path:
+    description: "Absolute path to a JSON list of regressing modules"
+    value: ${{ steps.compare.outputs.regressions-json-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Generate coverage (common)"
+      id: common
+      uses: ./coverage-common
+      with:
+        working-directory: ${{ inputs.working-directory }}
+        target-platform: ${{ inputs.target-platform }}
+        jobs: ${{ inputs.jobs }}
+
+    - name: "Fetch baseline branch"
+      id: baseline
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+      run: |
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${BASE_REF}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+        BASELINE_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-baseline"
+        rm -rf "$BASELINE_DIR"
+        if git fetch origin "${BASELINE_BRANCH}:refs/remotes/origin/${BASELINE_BRANCH}" 2>/dev/null; then
+          git worktree add --detach "$BASELINE_DIR" "origin/${BASELINE_BRANCH}"
+          echo "baseline-missing=false" >> "$GITHUB_OUTPUT"
+        else
+          mkdir -p "$BASELINE_DIR"
+          echo "baseline-missing=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Baseline branch ${BASELINE_BRANCH} does not exist; PR comment will note this."
+        fi
+        echo "baseline-dir=${BASELINE_DIR}" >> "$GITHUB_OUTPUT"
+
+    - name: "Compare against baseline"
+      id: compare
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+        BASELINE_DIR: ${{ steps.baseline.outputs.baseline-dir }}
+        BASELINE_MISSING: ${{ steps.baseline.outputs.baseline-missing }}
+        BASE_REF: ${{ github.base_ref }}
+        THRESHOLD: ${{ inputs.regression-threshold }}
+        SUBDIR: ${{ inputs.coverage-subdirectory }}
+        MARKER: ${{ inputs.comment-marker }}
+        FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        MODULES_JSONL: ${{ steps.common.outputs.modules-jsonl }}
+      run: |
+        OUT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-out"
+        mkdir -p "$OUT_DIR"
+        COMMENT_PATH="$OUT_DIR/comment.md"
+        REGRESSIONS_PATH="$OUT_DIR/regressions.json"
+        FAIL_FLAG=""
+        if [ "$FAIL_ON_REGRESSION" = "true" ]; then
+          FAIL_FLAG="--fail-on-regression"
+        fi
+        MISSING_FLAG=""
+        if [ "$BASELINE_MISSING" = "true" ]; then
+          MISSING_FLAG="--baseline-missing"
+        fi
+        python3 "${COMMON_PATH}/scripts/compare.py" \
+          --source . \
+          --baseline "$BASELINE_DIR" \
+          --modules-jsonl "$MODULES_JSONL" \
+          --coverage-subdirectory "$SUBDIR" \
+          --base-ref "$BASE_REF" \
+          --threshold "$THRESHOLD" \
+          --comment-marker "$MARKER" \
+          --output "$COMMENT_PATH" \
+          --regressions-output "$REGRESSIONS_PATH" \
+          $FAIL_FLAG $MISSING_FLAG
+        echo "comment-path=$COMMENT_PATH" >> "$GITHUB_OUTPUT"
+        echo "regressions-json-path=$REGRESSIONS_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: "Post sticky PR comment"
+      if: steps.compare.outputs.comment-path != ''
+      uses: actions/github-script@v7
+      env:
+        COMMENT_PATH: ${{ steps.compare.outputs.comment-path }}
+        MARKER: ${{ inputs.comment-marker }}
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
+          const marker = process.env.MARKER;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({
+            owner, repo, issue_number, per_page: 100,
+          });
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }

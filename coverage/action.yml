@@ -1,0 +1,342 @@
+name: "F´ Coverage"
+description: >
+  Generate per-module + global gcovr coverage, store it in a per-base-branch
+  orphan branch (coverage/<ref>), and compare PR head against the matching
+  baseline.
+inputs:
+  working-directory:
+    description: "Directory to run fprime-util from"
+    required: false
+    default: "."
+  generate-args:
+    description: "Extra flags passed to fprime-util generate --ut"
+    required: false
+    default: ""
+  target-platform:
+    description: "Target platform/toolchain passed to fprime-util (e.g. native)"
+    required: false
+    default: ""
+  jobs:
+    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
+    required: false
+    default: ""
+  baseline-branch-prefix:
+    description: "Prefix applied to <ref-name> to form the baseline branch name"
+    required: false
+    default: "coverage"
+  coverage-subdirectory:
+    description: >
+      Subdirectory under each module in the baseline branch holding coverage
+      artifacts (summary.json, index.html, coverage.*.html). The working-tree
+      path is always <module>/coverage/ because fprime-util hard-codes it; this
+      input controls what segment appears in the baseline branch and catalog.
+      Set to "" to flatten so paths become <module>/index.html instead of
+      <module>/coverage/index.html.
+    required: false
+    default: "coverage"
+  regression-threshold:
+    description: "Percentage points of line coverage drop tolerated per module"
+    required: false
+    default: "0.5"
+  fail-on-regression:
+    description: "If true, the PR job fails when any module regresses beyond threshold"
+    required: false
+    default: "false"
+  comment-marker:
+    description: "Hidden HTML marker used to find and edit the sticky PR comment"
+    required: false
+    default: "<!-- fprime-coverage-comment -->"
+  install-gcovr:
+    description: "If true (default), install gcovr via pip"
+    required: false
+    default: "true"
+
+outputs:
+  catalog-path:
+    description: "Absolute path to the generated catalog.json"
+    value: ${{ steps.catalog.outputs.catalog-path }}
+  comment-path:
+    description: "Absolute path to the PR comment markdown (PR runs only)"
+    value: ${{ steps.compare.outputs.comment-path }}
+  regressions-json-path:
+    description: "Absolute path to a JSON list of regressing modules (PR runs only)"
+    value: ${{ steps.compare.outputs.regressions-json-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Install gcovr"
+      if: inputs.install-gcovr == 'true'
+      shell: bash
+      run: |
+        python3 -m pip install --upgrade gcovr
+        gcovr --version
+
+    - name: "Generate UT build cache"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        GENERATE_ARGS: ${{ inputs.generate-args }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util generate --ut ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM}
+
+    - name: "Build UTs"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        JOBS_FLAG=""
+        if [ "${JOBS_INPUT}" = "random" ]; then
+          JOBS=$(( (RANDOM % 32) + 1 ))
+          JOBS_FLAG="-j${JOBS}"
+        elif [ -n "${JOBS_INPUT}" ]; then
+          JOBS_FLAG="-j${JOBS_INPUT}"
+        fi
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util build --all --ut ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM}
+
+    - name: "Discover modules"
+      id: discover
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        python3 "${ACTION_PATH}/scripts/discover.py" --root . > modules.jsonl
+        echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
+        echo "Discovered $(wc -l < modules.jsonl) modules"
+
+    - name: "Global coverage (fprime-util check --all --coverage)"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        JOBS_FLAG=""
+        if [ "${JOBS_INPUT}" = "random" ]; then
+          JOBS=$(( (RANDOM % 32) + 1 ))
+          JOBS_FLAG="-j${JOBS}"
+        elif [ -n "${JOBS_INPUT}" ]; then
+          JOBS_FLAG="-j${JOBS_INPUT}"
+        fi
+        fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
+          --pass-through --json-summary coverage/summary.json --output-on-failure
+
+    - name: "Per-module coverage"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+      run: |
+        set -e
+        FAILED=0
+        while IFS= read -r line; do
+          [ -z "$line" ] && continue
+          MOD=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['path'])" "$line")
+          HAS_UT=$(python3 -c "import json,sys;print('1' if json.loads(sys.argv[1]).get('has_ut') else '0')" "$line")
+          if [ "$HAS_UT" != "1" ]; then
+            echo "[skip] $MOD (no register_fprime_ut)"
+            continue
+          fi
+          echo "[cover] $MOD"
+          (
+            cd "$MOD"
+            fprime-util check --coverage ${TARGET_PLATFORM} \
+              --pass-through --json-summary coverage/summary.json --output-on-failure
+            if [ -f coverage/coverage.html ]; then
+              mv coverage/coverage.html coverage/index.html
+            fi
+          ) || FAILED=$((FAILED+1))
+        done < "$MODULES_JSONL"
+        if [ "$FAILED" -gt 0 ]; then
+          echo "Coverage failed in $FAILED module(s)." >&2
+          exit 1
+        fi
+
+    - name: "Compute ref / ref-type / base-ref"
+      id: ref
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        REF_NAME: ${{ github.ref_name }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          # On PRs we never push; only the base-ref matters.
+          echo "is-push=false" >> "$GITHUB_OUTPUT"
+          echo "base-ref=$BASE_REF" >> "$GITHUB_OUTPUT"
+          echo "ref-type=branch" >> "$GITHUB_OUTPUT"
+          echo "ref-name=pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "is-push=true" >> "$GITHUB_OUTPUT"
+          echo "base-ref=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "ref-name=$REF_NAME" >> "$GITHUB_OUTPUT"
+          case "$REF" in
+            refs/tags/*) echo "ref-type=tag"    >> "$GITHUB_OUTPUT" ;;
+            *)           echo "ref-type=branch" >> "$GITHUB_OUTPUT" ;;
+          esac
+        fi
+
+    - name: "Fetch baseline branch (PR only)"
+      id: baseline
+      if: github.event_name == 'pull_request'
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        BASE_REF: ${{ steps.ref.outputs.base-ref }}
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+      run: |
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${BASE_REF}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+        BASELINE_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-baseline"
+        rm -rf "$BASELINE_DIR"
+        if git fetch origin "${BASELINE_BRANCH}:refs/remotes/origin/${BASELINE_BRANCH}" 2>/dev/null; then
+          git worktree add --detach "$BASELINE_DIR" "origin/${BASELINE_BRANCH}"
+          echo "baseline-missing=false" >> "$GITHUB_OUTPUT"
+        else
+          mkdir -p "$BASELINE_DIR"
+          echo "baseline-missing=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Baseline branch ${BASELINE_BRANCH} does not exist; PR comment will note this."
+        fi
+        echo "baseline-dir=${BASELINE_DIR}" >> "$GITHUB_OUTPUT"
+
+    - name: "Compare against baseline (PR only)"
+      id: compare
+      if: github.event_name == 'pull_request'
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        BASELINE_DIR: ${{ steps.baseline.outputs.baseline-dir }}
+        BASELINE_MISSING: ${{ steps.baseline.outputs.baseline-missing }}
+        BASE_REF: ${{ steps.ref.outputs.base-ref }}
+        THRESHOLD: ${{ inputs.regression-threshold }}
+        SUBDIR: ${{ inputs.coverage-subdirectory }}
+        MARKER: ${{ inputs.comment-marker }}
+        FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+      run: |
+        OUT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-out"
+        mkdir -p "$OUT_DIR"
+        COMMENT_PATH="$OUT_DIR/comment.md"
+        REGRESSIONS_PATH="$OUT_DIR/regressions.json"
+        FAIL_FLAG=""
+        if [ "$FAIL_ON_REGRESSION" = "true" ]; then
+          FAIL_FLAG="--fail-on-regression"
+        fi
+        MISSING_FLAG=""
+        if [ "$BASELINE_MISSING" = "true" ]; then
+          MISSING_FLAG="--baseline-missing"
+        fi
+        python3 "${ACTION_PATH}/scripts/compare.py" \
+          --source . \
+          --baseline "$BASELINE_DIR" \
+          --modules-jsonl "$MODULES_JSONL" \
+          --coverage-subdirectory "$SUBDIR" \
+          --base-ref "$BASE_REF" \
+          --threshold "$THRESHOLD" \
+          --comment-marker "$MARKER" \
+          --output "$COMMENT_PATH" \
+          --regressions-output "$REGRESSIONS_PATH" \
+          $FAIL_FLAG $MISSING_FLAG
+        echo "comment-path=$COMMENT_PATH" >> "$GITHUB_OUTPUT"
+        echo "regressions-json-path=$REGRESSIONS_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: "Post sticky PR comment"
+      if: github.event_name == 'pull_request' && steps.compare.outputs.comment-path != ''
+      uses: actions/github-script@v7
+      env:
+        COMMENT_PATH: ${{ steps.compare.outputs.comment-path }}
+        MARKER: ${{ inputs.comment-marker }}
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
+          const marker = process.env.MARKER;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({
+            owner, repo, issue_number, per_page: 100,
+          });
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+
+    - name: "Mirror to baseline branch (push only, not forks)"
+      id: catalog
+      if: ${{ steps.ref.outputs.is-push == 'true' && github.event.repository.fork == false }}
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+        REF_NAME: ${{ steps.ref.outputs.ref-name }}
+        REF_TYPE: ${{ steps.ref.outputs.ref-type }}
+        SUBDIR: ${{ inputs.coverage-subdirectory }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        COMMIT_SHA: ${{ github.sha }}
+      run: |
+        set -e
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
+        BASELINE_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-baseline"
+        rm -rf "$BASELINE_DIR"
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        if git fetch origin "${BASELINE_BRANCH}:refs/remotes/origin/${BASELINE_BRANCH}" 2>/dev/null; then
+          git worktree add -B "$BASELINE_BRANCH" "$BASELINE_DIR" "origin/${BASELINE_BRANCH}"
+        else
+          git worktree add --detach "$BASELINE_DIR" "$(git rev-parse HEAD)"
+          git -C "$BASELINE_DIR" checkout --orphan "$BASELINE_BRANCH"
+          git -C "$BASELINE_DIR" rm -rf --quiet . || true
+        fi
+
+        python3 "${ACTION_PATH}/scripts/mirror.py" \
+          --source . \
+          --dest "$BASELINE_DIR" \
+          --modules-jsonl "$MODULES_JSONL" \
+          --coverage-subdirectory "$SUBDIR" \
+          --ref "$REF_NAME" \
+          --ref-type "$REF_TYPE" \
+          --commit "$COMMIT_SHA"
+
+        echo "catalog-path=${BASELINE_DIR}/catalog.json" >> "$GITHUB_OUTPUT"
+
+        git -C "$BASELINE_DIR" add -A
+        if git -C "$BASELINE_DIR" diff --cached --quiet; then
+          echo "No coverage changes to commit; skipping push."
+        else
+          SHORT_SHA=$(git rev-parse --short "$COMMIT_SHA")
+          SUBJECT=$(git log -1 --format=%s "$COMMIT_SHA" || echo "coverage update")
+          git -C "$BASELINE_DIR" commit -m "coverage: ${SHORT_SHA} ${SUBJECT}"
+          git -C "$BASELINE_DIR" push origin "$BASELINE_BRANCH"
+        fi
+
+    - name: "Upload coverage artifacts"
+      if: always() && steps.discover.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: fprime-coverage-${{ github.run_id }}
+        if-no-files-found: ignore
+        path: |
+          ${{ inputs.working-directory }}/coverage/**
+          ${{ inputs.working-directory }}/**/coverage/summary.json
+          ${{ inputs.working-directory }}/**/coverage/index.html
+          ${{ inputs.working-directory }}/**/coverage/coverage.*.html

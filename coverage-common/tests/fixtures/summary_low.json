@@ -1,0 +1,16 @@
+{
+  "gcovr/format_version": "0.6",
+  "format_version": "0.6",
+  "current_working_directory": "/tmp/build",
+  "root": ".",
+  "line_total": 200,
+  "line_covered": 140,
+  "line_percent": 70.0,
+  "branch_total": 60,
+  "branch_covered": 30,
+  "branch_percent": 50.0,
+  "function_total": 10,
+  "function_covered": 7,
+  "function_percent": 70.0,
+  "files": []
+}

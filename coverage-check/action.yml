@@ -1,22 +1,19 @@
 name: "F´ Coverage (check)"
 description: >
-  Generate per-module + global gcovr coverage and compare against the
-  matching coverage/<base_ref> baseline branch, then post a sticky comment
-  on the pull request.  Intended to run on pull_request events with
-  permissions: { contents: read, pull-requests: write }.
+  Compare per-module + global gcovr coverage against the matching
+  coverage/<base_ref> baseline branch and post a sticky comment on the
+  pull request.  Intended to run on pull_request events with
+  permissions: { contents: read, pull-requests: write }.  Call the
+  coverage-common action first to produce the coverage outputs and
+  pass its 'modules-jsonl' output into this action.
 inputs:
   working-directory:
-    description: "Directory to run fprime-util from"
+    description: "Directory the coverage outputs were produced in (should match coverage-common)"
     required: false
     default: "."
-  target-platform:
-    description: "Target platform/toolchain passed to fprime-util (e.g. native)"
-    required: false
-    default: ""
-  jobs:
-    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
-    required: false
-    default: ""
+  modules-jsonl:
+    description: "Path to the JSON-Lines file produced by coverage-common (modules-jsonl output)"
+    required: true
   baseline-branch-prefix:
     description: "Prefix applied to <base-ref> to form the baseline branch name"
     required: false
@@ -53,14 +50,6 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: "Generate coverage (common)"
-      id: common
-      uses: ./coverage-common
-      with:
-        working-directory: ${{ inputs.working-directory }}
-        target-platform: ${{ inputs.target-platform }}
-        jobs: ${{ inputs.jobs }}
-
     - name: "Fetch baseline branch"
       id: baseline
       working-directory: ${{ inputs.working-directory }}
@@ -96,7 +85,7 @@ runs:
         SUBDIR: ${{ inputs.coverage-subdirectory }}
         MARKER: ${{ inputs.comment-marker }}
         FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
-        MODULES_JSONL: ${{ steps.common.outputs.modules-jsonl }}
+        MODULES_JSONL: ${{ inputs.modules-jsonl }}
       run: |
         OUT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-out"
         mkdir -p "$OUT_DIR"

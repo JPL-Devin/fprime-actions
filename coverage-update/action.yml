@@ -1,22 +1,18 @@
 name: "F´ Coverage (update)"
 description: >
-  Generate per-module + global gcovr coverage and mirror it to the
-  per-base-branch orphan branch (coverage/<ref-name>).  Intended to run on
-  push events (devel, release/**, tags) with permissions:
-  { contents: write }.  Skipped on fork pushes.
+  Mirror coverage outputs (produced by coverage-common) to the
+  per-base-branch orphan branch (coverage/<ref-name>).  Intended to run
+  on push events (devel, release/**, tags) with permissions:
+  { contents: write }.  Skipped on fork pushes.  Call the coverage-common
+  action first and pass its 'modules-jsonl' output into this action.
 inputs:
   working-directory:
-    description: "Directory to run fprime-util from"
+    description: "Directory the coverage outputs were produced in (should match coverage-common)"
     required: false
     default: "."
-  target-platform:
-    description: "Target platform/toolchain passed to fprime-util (e.g. native)"
-    required: false
-    default: ""
-  jobs:
-    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
-    required: false
-    default: ""
+  modules-jsonl:
+    description: "Path to the JSON-Lines file produced by coverage-common (modules-jsonl output)"
+    required: true
   baseline-branch-prefix:
     description: "Prefix applied to <ref-name> to form the baseline branch name"
     required: false
@@ -39,14 +35,6 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: "Generate coverage (common)"
-      id: common
-      uses: ./coverage-common
-      with:
-        working-directory: ${{ inputs.working-directory }}
-        target-platform: ${{ inputs.target-platform }}
-        jobs: ${{ inputs.jobs }}
-
     - name: "Compute ref / ref-type"
       id: ref
       shell: bash
@@ -71,7 +59,7 @@ runs:
         REF_NAME: ${{ steps.ref.outputs.ref-name }}
         REF_TYPE: ${{ steps.ref.outputs.ref-type }}
         SUBDIR: ${{ inputs.coverage-subdirectory }}
-        MODULES_JSONL: ${{ steps.common.outputs.modules-jsonl }}
+        MODULES_JSONL: ${{ inputs.modules-jsonl }}
         COMMIT_SHA: ${{ github.sha }}
       run: |
         set -e

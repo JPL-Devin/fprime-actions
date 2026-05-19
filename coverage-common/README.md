@@ -42,6 +42,7 @@ action).
 | `working-directory` | `.`     | Directory to run `fprime-util` from.                                                  |
 | `target-platform`   | `""`    | Target platform/toolchain passed to `fprime-util`.                                    |
 | `jobs`              | `""`    | Parallel job count for check. `random` picks 1-32 each run; empty omits `-j`.        |
+| `strict`            | `false` | When `true`, fail the action if any module's UT/coverage build fails. Default `false` so per-module failures surface as missing `summary.json` (rendered as "no coverage" downstream) without failing CI. |
 
 ## Outputs
 
@@ -53,6 +54,9 @@ action).
 
 * `discover.py` &mdash; emits JSON-Lines of `{path, has_ut}` for each module.
 * `run_coverage.py` &mdash; runs `fprime-util check --coverage` per module.
+  Exits 0 by default even if individual modules fail (lenient); pass
+  `--strict` (or set the `strict` input on the action to `'true'`) to
+  propagate per-module failures as a non-zero exit.
 * `compare.py` &mdash; PR-side delta + sticky comment markdown (used by
   `coverage-check`).
 * `mirror.py` &mdash; copies coverage outputs into the baseline worktree,

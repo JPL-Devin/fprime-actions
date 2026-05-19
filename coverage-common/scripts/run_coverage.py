@@ -6,9 +6,13 @@ register_fprime_ut(), and runs ``fprime-util check --coverage`` in each
 eligible module directory.  After each successful run, renames
 ``coverage/coverage.html`` to ``coverage/index.html`` when present.
 
-Exit codes:
-  0  all modules succeeded (or none were eligible)
-  1  one or more modules failed
+Failures are printed to stderr (``[FAIL] <module> (exit N)``) and a
+summary line is always written; the exit code depends on ``--strict``:
+
+  default        exit 0 even if some modules failed.  Downstream steps
+                 (compare / catalog) interpret a missing summary.json as
+                 "no coverage for this module".
+  --strict       exit 1 when one or more modules failed.
 """
 from __future__ import annotations
 
@@ -49,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Path to modules.jsonl from discover.py")
     parser.add_argument("--target-platform", default="",
                         help="Target platform forwarded to fprime-util")
+    parser.add_argument("--strict", action="store_true",
+                        help="Exit non-zero if any module failed (default: lenient, exit 0)")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
@@ -76,7 +82,9 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
         flush=True,
     )
-    return 1 if failed > 0 else 0
+    if failed > 0 and args.strict:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

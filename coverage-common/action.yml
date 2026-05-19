@@ -18,6 +18,14 @@ inputs:
     description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
     required: false
     default: ""
+  strict:
+    description: >
+      When 'true', fail the action if any module's UT/coverage build fails.
+      Default 'false' so individual module failures surface as missing
+      summary.json (rendered as "no coverage" in the PR comment / catalog)
+      without failing the whole CI job.
+    required: false
+    default: "false"
 outputs:
   modules-jsonl:
     description: "Path to the JSON-Lines file listing discovered modules"
@@ -61,8 +69,14 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        STRICT: ${{ inputs.strict }}
       run: |
+        STRICT_FLAG=""
+        if [ "${STRICT}" = "true" ]; then
+          STRICT_FLAG="--strict"
+        fi
         python3 "${ACTION_PATH}/scripts/run_coverage.py" \
           --root . \
           --modules-jsonl "$MODULES_JSONL" \
-          --target-platform "${TARGET_PLATFORM}"
+          --target-platform "${TARGET_PLATFORM}" \
+          ${STRICT_FLAG}

@@ -26,6 +26,12 @@ inputs:
       without failing the whole CI job.
     required: false
     default: "false"
+  debug:
+    description: >
+      When 'true', forward gcovr's verbose output (-v) for the global and
+      per-module steps.  Useful for diagnosing slow or stuck coverage runs.
+    required: false
+    default: "false"
 outputs:
   modules-jsonl:
     description: "Path to the JSON-Lines file listing discovered modules"
@@ -51,6 +57,7 @@ runs:
       env:
         JOBS_INPUT: ${{ inputs.jobs }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
+        DEBUG: ${{ inputs.debug }}
       run: |
         JOBS_FLAG=""
         if [ "${JOBS_INPUT}" = "random" ]; then
@@ -59,8 +66,18 @@ runs:
         elif [ -n "${JOBS_INPUT}" ]; then
           JOBS_FLAG="-j${JOBS_INPUT}"
         fi
+        VERBOSE_FLAG=""
+        if [ "${DEBUG}" = "true" ]; then
+          VERBOSE_FLAG="-v"
+        fi
+        # --gcov-ignore-parse-errors handles the known gcov-11 counter
+        # overflow (gcc#68080) defensively.  With gcov-12+ it should
+        # never fire, but it's cheap insurance against future toolchain
+        # regressions.
         fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
-          --pass-through --json-summary coverage/summary.json
+          --pass-through --json-summary coverage/summary.json \
+          --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+          ${VERBOSE_FLAG}
 
     - name: "Per-module coverage"
       working-directory: ${{ inputs.working-directory }}
@@ -70,13 +87,19 @@ runs:
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
         STRICT: ${{ inputs.strict }}
+        DEBUG: ${{ inputs.debug }}
       run: |
         STRICT_FLAG=""
         if [ "${STRICT}" = "true" ]; then
           STRICT_FLAG="--strict"
         fi
+        DEBUG_FLAG=""
+        if [ "${DEBUG}" = "true" ]; then
+          DEBUG_FLAG="--debug"
+        fi
         python3 "${ACTION_PATH}/scripts/run_coverage.py" \
           --root . \
           --modules-jsonl "$MODULES_JSONL" \
           --target-platform "${TARGET_PLATFORM}" \
-          ${STRICT_FLAG}
+          ${STRICT_FLAG} \
+          ${DEBUG_FLAG}

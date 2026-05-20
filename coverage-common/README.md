@@ -24,13 +24,32 @@ The caller must have already generated and built the UT cache. Use
 gcovr is provided by `fprime-tools`'s pip dependencies (via the `setup`
 action).
 
+### Runner version (important)
+
+**Pin the job to `runs-on: ubuntu-24.04` (or newer).**  Ubuntu 22.04 runners
+ship `gcc-11` / `gcov-11`, which has two known regressions that make this
+action unusable on real-world F´ projects:
+
+* Counter overflow ([gcc#68080](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=68080)) crashes gcovr on heavily-exercised branches.
+* Pathological symbol-table walks on heavily-templated test code can turn a 30-second coverage run into 30+ minutes (in the wild we have seen single `.gcda` files take 22 minutes of single-threaded CPU each).
+
+Both are fixed in `gcc-12` and later; `ubuntu-24.04` ships `gcc-13` by
+default so this is the path of least resistance.  The action passes
+`--gcov-ignore-parse-errors=negative_hits.warn_once_per_file` to gcovr as a
+defensive measure against the counter-overflow bug, but there is nothing
+it can do about the symbol-walk slowness short of upgrading the toolchain.
+If you must run on `ubuntu-22.04` for unrelated reasons, expect coverage
+runs to be 10-60x slower (or hang outright) on projects with templated
+test fixtures.
+
 ## What it does
 
 1. Discovers F´ modules by grepping every `CMakeLists.txt` under
    `working-directory` for `register_fprime_module(`. Modules that also call
    `register_fprime_ut(` are eligible for coverage.
 2. Runs `fprime-util check --all --coverage` once for the global headline
-   number.
+   number. Passes `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file`
+   to gcovr as defense against counter-overflow bugs.
 3. Runs `fprime-util check --coverage` in each module directory with a UT.
 4. Renames each module's `coverage.html` to `index.html`. The global
    `coverage-all.html` is **not** renamed.
@@ -43,6 +62,7 @@ action).
 | `target-platform`   | `""`    | Target platform/toolchain passed to `fprime-util`.                                    |
 | `jobs`              | `""`    | Parallel job count for check. `random` picks 1-32 each run; empty omits `-j`.        |
 | `strict`            | `false` | When `true`, fail the action if any module's UT/coverage build fails. Default `false` so per-module failures surface as missing `summary.json` (rendered as "no coverage" downstream) without failing CI. |
+| `debug`             | `false` | When `true`, forward gcovr's `-v` verbose output for global and per-module steps. Useful for diagnosing slow or stuck coverage runs. |
 
 ## Outputs
 

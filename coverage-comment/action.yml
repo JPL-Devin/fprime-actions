@@ -1,0 +1,118 @@
+name: "F´ Coverage (comment)"
+description: >
+  Post the sticky pull-request comment produced by an upstream
+  coverage-check run.  Designed to be called from a workflow_run job so
+  it can use pull-requests: write permissions even when the originating
+  pull_request event came from a fork, where GitHub strips write
+  permissions from GITHUB_TOKEN.  The originating coverage-check
+  uploads its comment body, regressions JSON, and PR number as a
+  workflow artifact; this action downloads the artifact (via
+  actions/download-artifact's cross-run support) and posts / updates
+  the sticky comment.
+
+  This action expects to run on a workflow_run event.  The triggering
+  workflow_run payload provides the run id of the originating
+  pull_request workflow, which this action passes to download-artifact
+  as the run-id to fetch from.
+
+inputs:
+  artifact-name:
+    description: >
+      Name of the artifact uploaded by the originating coverage-check
+      run.  Must match the 'artifact-name' input passed to
+      coverage-check on the pull_request side.
+    required: false
+    default: "fprime-coverage-comment"
+  comment-marker:
+    description: >
+      Hidden HTML marker used to find and edit the sticky PR comment.
+      Used as a fallback if the artifact does not carry its own
+      comment-marker.txt (older coverage-check versions).  When the
+      artifact does carry the marker, the artifact's value wins.
+    required: false
+    default: "<!-- fprime-coverage-comment -->"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Verify workflow_run event"
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        if [ "$EVENT_NAME" != "workflow_run" ]; then
+          echo "::error::coverage-comment must be invoked from a workflow_run event (got: $EVENT_NAME)."
+          exit 1
+        fi
+
+    - name: "Download coverage artifact"
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ github.token }}
+        path: ${{ runner.temp }}/fprime-coverage-comment
+
+    - name: "Post sticky PR comment"
+      uses: actions/github-script@v7
+      env:
+        EXTRACT_DIR: ${{ runner.temp }}/fprime-coverage-comment
+        FALLBACK_MARKER: ${{ inputs.comment-marker }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+
+          const extractDir = process.env.EXTRACT_DIR;
+          const prNumberPath = path.join(extractDir, 'pr-number.txt');
+          const commentPath = path.join(extractDir, 'comment.md');
+          const markerPath = path.join(extractDir, 'comment-marker.txt');
+
+          if (!fs.existsSync(prNumberPath)) {
+            core.setFailed(`Artifact is missing pr-number.txt at ${prNumberPath}`);
+            return;
+          }
+          if (!fs.existsSync(commentPath)) {
+            core.setFailed(`Artifact is missing comment.md at ${commentPath}`);
+            return;
+          }
+
+          const prRaw = fs.readFileSync(prNumberPath, 'utf8').trim();
+          const pr = parseInt(prRaw, 10);
+          if (!Number.isFinite(pr) || pr <= 0) {
+            core.setFailed(`Invalid PR number in artifact: '${prRaw}'`);
+            return;
+          }
+
+          const body = fs.readFileSync(commentPath, 'utf8');
+          const marker = fs.existsSync(markerPath)
+            ? fs.readFileSync(markerPath, 'utf8').trim()
+            : process.env.FALLBACK_MARKER;
+          if (!marker) {
+            core.setFailed(`No comment marker available (artifact missing comment-marker.txt and no fallback set).`);
+            return;
+          }
+          if (!body.includes(marker)) {
+            core.warning(
+              `Comment body does not contain marker '${marker}'. The next run ` +
+              `will not be able to find this comment to update it in place.`
+            );
+          }
+
+          const { owner, repo } = context.repo;
+          const comments = await github.paginate(
+            github.rest.issues.listComments,
+            { owner, repo, issue_number: pr, per_page: 100 },
+          );
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner, repo, comment_id: existing.id, body,
+            });
+            core.info(`Updated existing sticky comment ${existing.id} on PR #${pr}.`);
+          } else {
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: pr, body,
+            });
+            core.info(`Created new sticky comment on PR #${pr}.`);
+          }

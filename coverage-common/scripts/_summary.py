@@ -35,6 +35,7 @@ class Summary:
     """A coverage summary for one module (or the global ``--all`` run)."""
 
     line: Totals
+    function: Totals
     branch: Totals
 
     @classmethod
@@ -49,17 +50,24 @@ class Summary:
             covered=int(doc.get("line_covered", 0) or 0),
             total=int(doc.get("line_total", 0) or 0),
         )
+        function = Totals(
+            covered=int(doc.get("function_covered", 0) or 0),
+            total=int(doc.get("function_total", 0) or 0),
+        )
         branch = Totals(
             covered=int(doc.get("branch_covered", 0) or 0),
             total=int(doc.get("branch_total", 0) or 0),
         )
-        return cls(line=line, branch=branch)
+        return cls(line=line, function=function, branch=branch)
 
     def to_catalog_entry(self) -> dict:
         return {
             "line_pct": self.line.percent,
             "line_covered": self.line.covered,
             "line_total": self.line.total,
+            "function_pct": self.function.percent,
+            "function_covered": self.function.covered,
+            "function_total": self.function.total,
             "branch_pct": self.branch.percent,
             "branch_covered": self.branch.covered,
             "branch_total": self.branch.total,

@@ -110,6 +110,8 @@ def test_summary_load_parses_gcovr_json():
     assert s is not None
     assert s.line.covered == 392 and s.line.total == 400
     assert s.line.percent == 98.0
+    assert s.function.covered == 28 and s.function.total == 30
+    assert s.function.percent == 93.33
     assert s.branch.percent == 87.5
 
 
@@ -248,8 +250,10 @@ def test_catalog_groups_and_rollup():
         assert by_path["Drv/LinuxGpio"]["has_coverage"] is False
         assert by_path["Drv/LinuxGpio"]["has_ut"] is False
         assert by_path["Svc/CmdDispatcher"]["line_pct"] == 98.0
+        assert by_path["Svc/CmdDispatcher"]["function_pct"] == 93.33
         # Overall came from a high fixture
         assert cat_doc["overall"]["line_pct"] == 98.0
+        assert cat_doc["overall"]["function_pct"] == 93.33
 
         index_html = (dest / "index.html").read_text(encoding="utf-8")
         # Spot-check structure
@@ -257,6 +261,10 @@ def test_catalog_groups_and_rollup():
         assert "Svc/CmdDispatcher" in index_html
         assert "Drv/LinuxGpio" in index_html
         assert "(no UT)" in index_html
+        # All three coverage columns present
+        assert ">Line</th>" in index_html
+        assert ">Function</th>" in index_html
+        assert ">Branch</th>" in index_html
         # Color classes applied
         assert "pct-green" in index_html
         assert "pct-red" in index_html

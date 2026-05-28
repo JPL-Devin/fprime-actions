@@ -47,7 +47,7 @@ h1 { margin: 0 0 0.25rem 0; font-size: 1.4rem; }
 details { border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 0.5rem; background: #ffffff; }
 details > summary {
   cursor: pointer; padding: 0.5rem 0.75rem; font-weight: 600;
-  display: grid; grid-template-columns: 1fr 6rem 6rem 6rem; gap: 0.5rem;
+  display: grid; grid-template-columns: 1fr 6rem 6rem 6rem 6rem; gap: 0.5rem;
   align-items: baseline; list-style: none;
 }
 details > summary::-webkit-details-marker { display: none; }
@@ -108,11 +108,15 @@ class Group:
             covered=sum(m.summary.line.covered for m in self.modules if m.summary),
             total=sum(m.summary.line.total for m in self.modules if m.summary),
         )
+        function = Totals(
+            covered=sum(m.summary.function.covered for m in self.modules if m.summary),
+            total=sum(m.summary.function.total for m in self.modules if m.summary),
+        )
         branch = Totals(
             covered=sum(m.summary.branch.covered for m in self.modules if m.summary),
             total=sum(m.summary.branch.total for m in self.modules if m.summary),
         )
-        return Summary(line=line, branch=branch)
+        return Summary(line=line, function=function, branch=branch)
 
 
 def _group_modules(entries: Iterable[ModuleEntry]) -> List[Group]:
@@ -135,10 +139,15 @@ def _render_cell_pct(pct: float, has_coverage: bool) -> str:
     return f'<td class="num {_pct_class(pct, True)}">{pct:.2f}%</td>'
 
 
-def _render_summary_row(label: str, line_pct: float, branch_pct: float, has_coverage: bool) -> str:
+def _render_summary_row(label: str, line_pct: float, function_pct: float, branch_pct: float, has_coverage: bool) -> str:
     label_esc = html.escape(label)
     line_cell = (
         f'<span class="num {_pct_class(line_pct, has_coverage)}">{line_pct:.2f}%</span>'
+        if has_coverage
+        else '<span class="num no-cov">&mdash;</span>'
+    )
+    function_cell = (
+        f'<span class="num {_pct_class(function_pct, has_coverage)}">{function_pct:.2f}%</span>'
         if has_coverage
         else '<span class="num no-cov">&mdash;</span>'
     )
@@ -147,14 +156,14 @@ def _render_summary_row(label: str, line_pct: float, branch_pct: float, has_cove
         if has_coverage
         else '<span class="num no-cov">&mdash;</span>'
     )
-    return f"<span>{label_esc}</span>{line_cell}{branch_cell}<span></span>"
+    return f"<span>{label_esc}</span>{line_cell}{function_cell}{branch_cell}<span></span>"
 
 
 def _render_group(group: Group) -> str:
     rollup = group.rollup()
     has_coverage = rollup.line.total > 0
     open_attr = " open" if group.name in {"Fw", "Svc"} else ""
-    header = _render_summary_row(group.name + "/", rollup.line.percent, rollup.branch.percent, has_coverage)
+    header = _render_summary_row(group.name + "/", rollup.line.percent, rollup.function.percent, rollup.branch.percent, has_coverage)
 
     rows: list[str] = []
     for mod in group.modules:
@@ -162,22 +171,24 @@ def _render_group(group: Group) -> str:
         report_esc = html.escape(mod.report)
         if mod.has_coverage and mod.summary is not None:
             line_html = _render_cell_pct(mod.summary.line.percent, True)
+            function_html = _render_cell_pct(mod.summary.function.percent, True)
             branch_html = _render_cell_pct(mod.summary.branch.percent, True)
             note = ""
         else:
             line_html = _render_cell_pct(0.0, False)
+            function_html = _render_cell_pct(0.0, False)
             branch_html = _render_cell_pct(0.0, False)
             note = '<span class="no-ut">(no UT)</span>' if not mod.has_ut else '<span class="no-cov">(no coverage)</span>'
         rows.append(
             f'<tr class="row">'
             f'<td><a href="{report_esc}">{path_esc}</a> {note}</td>'
-            f"{line_html}{branch_html}"
+            f"{line_html}{function_html}{branch_html}"
             f"</tr>"
         )
 
     return (
         f"<details{open_attr}><summary>{header}</summary>"
-        f'<table><thead><tr><th>Module</th><th class="num">Line</th><th class="num">Branch</th></tr></thead>'
+        f'<table><thead><tr><th>Module</th><th class="num">Line</th><th class="num">Function</th><th class="num">Branch</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
         f"</details>"
     )
@@ -200,6 +211,7 @@ def render_index_html(
         overall_text = (
             f'<strong>Overall:</strong> '
             f'<span class="{_pct_class(overall.line.percent, True)}">{overall.line.percent:.2f}% line</span>, '
+            f'<span class="{_pct_class(overall.function.percent, True)}">{overall.function.percent:.2f}% function</span>, '
             f'<span class="{_pct_class(overall.branch.percent, True)}">{overall.branch.percent:.2f}% branch</span>'
         )
     else:

@@ -4,7 +4,7 @@ For each module in the discovered module list, read the PR-side
 ``<source>/<mod>/coverage/summary.json`` and the corresponding
 ``<baseline>/<mod>/<subdir>/summary.json`` (or the flattened layout if
 ``--coverage-subdirectory ""`` was used when seeding the baseline) and
-compute line / branch deltas.
+compute line / function / branch deltas.
 
 Writes a markdown PR comment to ``--output``.  Exits 0 by default; pass
 ``--fail-on-regression`` to exit 1 when any module's line coverage drops
@@ -39,6 +39,12 @@ class ModuleDelta:
         return round(self.pr.line.percent - self.baseline.line.percent, 2)
 
     @property
+    def function_delta(self) -> Optional[float]:
+        if self.pr is None or self.baseline is None:
+            return None
+        return round(self.pr.function.percent - self.baseline.function.percent, 2)
+
+    @property
     def branch_delta(self) -> Optional[float]:
         if self.pr is None or self.baseline is None:
             return None
@@ -64,6 +70,8 @@ def _row(delta: ModuleDelta) -> str:
         f"| `{delta.path}` "
         f"| {_format_pct(delta.pr, 'line')} "
         f"| {_format_delta(delta.line_delta)} "
+        f"| {_format_pct(delta.pr, 'function')} "
+        f"| {_format_delta(delta.function_delta)} "
         f"| {_format_pct(delta.pr, 'branch')} "
         f"| {_format_delta(delta.branch_delta)} |"
     )
@@ -136,8 +144,8 @@ def build_comment(
 
     lines.append("#### Regressions")
     if regressions:
-        lines.append("| Module | Line | &Delta; | Branch | &Delta; |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("| Module | Line | &Delta; | Function | &Delta; | Branch | &Delta; |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
         lines.extend(_row(d) for d in regressions)
     else:
         lines.append("_(none over threshold)_")
@@ -145,8 +153,8 @@ def build_comment(
 
     lines.append("#### Modules changed")
     if changed:
-        lines.append("| Module | Line | &Delta; | Branch | &Delta; |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("| Module | Line | &Delta; | Function | &Delta; | Branch | &Delta; |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
         lines.extend(_row(d) for d in changed)
     else:
         lines.append("_(no measurable change)_")
@@ -154,21 +162,21 @@ def build_comment(
 
     if new_mods:
         lines.append("#### New modules")
-        lines.append("| Module | Line | Branch |")
-        lines.append("|---|---:|---:|")
+        lines.append("| Module | Line | Function | Branch |")
+        lines.append("|---|---:|---:|---:|")
         for d in new_mods:
             lines.append(
-                f"| `{d.path}` | {_format_pct(d.pr, 'line')} | {_format_pct(d.pr, 'branch')} |"
+                f"| `{d.path}` | {_format_pct(d.pr, 'line')} | {_format_pct(d.pr, 'function')} | {_format_pct(d.pr, 'branch')} |"
             )
         lines.append("")
 
     if removed_mods:
         lines.append("#### Removed modules")
-        lines.append("| Module | Baseline Line | Baseline Branch |")
-        lines.append("|---|---:|---:|")
+        lines.append("| Module | Baseline Line | Baseline Function | Baseline Branch |")
+        lines.append("|---|---:|---:|---:|")
         for d in removed_mods:
             lines.append(
-                f"| `{d.path}` | {_format_pct(d.baseline, 'line')} | {_format_pct(d.baseline, 'branch')} |"
+                f"| `{d.path}` | {_format_pct(d.baseline, 'line')} | {_format_pct(d.baseline, 'function')} | {_format_pct(d.baseline, 'branch')} |"
             )
         lines.append("")
 

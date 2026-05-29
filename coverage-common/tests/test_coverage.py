@@ -315,7 +315,8 @@ def test_compare_flags_regression_and_new_module():
         assert rc == 0  # threshold ok but fail-on-regression not set
         body = out.read_text(encoding="utf-8")
         assert "Svc/CmdDispatcher" in body
-        assert "-12.00" in body  # 86 - 98 = -12
+        assert "-12.00" in body  # line delta: 86 - 98 = -12
+        assert "-8.33" in body  # function delta: mid(85.0) - high(93.33)
         assert "Svc/Foo" in body
         assert "#### New modules" in body
         assert "#### Modules without UTs" in body

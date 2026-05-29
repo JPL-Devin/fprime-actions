@@ -56,7 +56,7 @@ posted by the companion `coverage-comment` workflow, which runs on
 1. Fetches the baseline branch `<baseline-branch-prefix>/<base_ref>` (e.g.
    `coverage/devel`). If the branch does not exist yet, the PR comment
    says so and no regressions are flagged.
-2. Computes per-module line/branch deltas (using outputs produced by
+2. Computes per-module line/function/branch deltas (using outputs produced by
    `coverage-common`) and writes a markdown comment with the worst
    regressions first.
 3. Uploads `comment.md`, `regressions.json`, `pr-number.txt`, and

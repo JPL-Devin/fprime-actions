@@ -2,9 +2,8 @@
 
 For each module in the discovered module list, read the PR-side
 ``<source>/<mod>/coverage/summary.json`` and the corresponding
-``<baseline>/<mod>/<subdir>/summary.json`` (or the flattened layout if
-``--coverage-subdirectory ""`` was used when seeding the baseline) and
-compute line / function / branch deltas.
+``<baseline>/<mod>/coverage-<kind>/summary.json`` and compute line /
+function / branch deltas.
 
 Writes a markdown PR comment to ``--output``.  Exits 0 by default; pass
 ``--fail-on-regression`` to exit 1 when any module's line coverage drops
@@ -23,6 +22,8 @@ from typing import List, Optional
 from _summary import Summary, load_summary
 
 DEFAULT_COMMENT_MARKER = "<!-- fprime-coverage-comment -->"
+
+KIND_LABELS = {"ut": "Unit Test", "integration": "Integration"}
 
 
 @dataclass
@@ -78,8 +79,7 @@ def _row(delta: ModuleDelta) -> str:
 
 
 def _baseline_path(baseline_root: Path, module_path: str, subdir: str) -> Path:
-    base = baseline_root / module_path
-    return (base / subdir / "summary.json") if subdir else (base / "summary.json")
+    return baseline_root / module_path / subdir / "summary.json"
 
 
 def build_comment(
@@ -91,6 +91,7 @@ def build_comment(
     threshold: float,
     marker: str,
     baseline_missing: bool,
+    coverage_kind: str,
 ) -> tuple[str, List[ModuleDelta]]:
     """Return (markdown, regressions) where regressions are entries below threshold."""
     regressions: list[ModuleDelta] = []
@@ -122,6 +123,8 @@ def build_comment(
     removed_mods.sort(key=lambda d: d.path)
     no_ut.sort(key=lambda d: d.path)
 
+    kind_label = KIND_LABELS.get(coverage_kind, coverage_kind)
+
     overall_line_pr = f"{overall_pr.line.percent:.2f}" if overall_pr else "&mdash;"
     overall_line_base = f"{overall_baseline.line.percent:.2f}" if overall_baseline else "&mdash;"
     if overall_pr and overall_baseline:
@@ -131,7 +134,7 @@ def build_comment(
         overall_line = f"**Overall (line):** {overall_line_pr}% (no baseline)"
 
     lines: list[str] = []
-    lines.append(f"### Coverage report &mdash; base `{base_ref}`")
+    lines.append(f"### {kind_label} coverage report &mdash; base `{base_ref}`")
     lines.append("")
     if baseline_missing:
         lines.append(
@@ -180,7 +183,7 @@ def build_comment(
             )
         lines.append("")
 
-    if no_ut:
+    if coverage_kind == "ut" and no_ut:
         lines.append("#### Modules without UTs")
         lines.append(", ".join(f"`{d.path}`" for d in no_ut))
         lines.append("")
@@ -194,7 +197,12 @@ def main(argv=None) -> int:
     parser.add_argument("--source", type=Path, required=True, help="PR-head working tree")
     parser.add_argument("--baseline", type=Path, required=True, help="Baseline worktree root")
     parser.add_argument("--modules-jsonl", type=Path, required=True)
-    parser.add_argument("--coverage-subdirectory", default="coverage")
+    parser.add_argument(
+        "--coverage-kind",
+        choices=("ut", "integration"),
+        default="ut",
+        help="Coverage kind: 'ut' (unit test) or 'integration'",
+    )
     parser.add_argument("--base-ref", required=True, help="Base branch name for the comment header")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--comment-marker", default=DEFAULT_COMMENT_MARKER)
@@ -214,7 +222,7 @@ def main(argv=None) -> int:
 
     source = args.source.resolve()
     baseline = args.baseline.resolve()
-    subdir = args.coverage_subdirectory
+    subdir = f"coverage-{args.coverage_kind}"
 
     with args.modules_jsonl.open("r", encoding="utf-8") as fh:
         records = [json.loads(line) for line in fh if line.strip()]
@@ -233,9 +241,7 @@ def main(argv=None) -> int:
     overall_baseline = (
         None
         if args.baseline_missing
-        else load_summary(
-            (baseline / subdir / "summary.json") if subdir else baseline / "summary.json"
-        )
+        else load_summary(baseline / subdir / "summary.json")
     )
 
     markdown, regressions = build_comment(
@@ -246,6 +252,7 @@ def main(argv=None) -> int:
         threshold=args.threshold,
         marker=args.comment_marker,
         baseline_missing=args.baseline_missing,
+        coverage_kind=args.coverage_kind,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(markdown, encoding="utf-8")

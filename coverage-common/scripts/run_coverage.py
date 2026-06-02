@@ -47,10 +47,6 @@ def _run_module(mod: str, root: Path, target_platform: str, debug: bool) -> bool
     if result.returncode != 0:
         print(f"[FAIL] {mod} (exit {result.returncode})", file=sys.stderr, flush=True)
         return False
-
-    html = mod_dir / "coverage" / "coverage.html"
-    if html.is_file():
-        html.rename(mod_dir / "coverage" / "index.html")
     return True
 
 

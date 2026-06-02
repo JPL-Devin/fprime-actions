@@ -2,7 +2,7 @@ name: "F´ Coverage (common)"
 description: >
   Shared coverage generation used by coverage-check (PR-only) and
   coverage-update (push-only).  Discovers F´ modules, runs gcovr globally
-  and per-module, and renames each module's coverage.html to index.html.
+  and per-module, and produces summary.json + coverage HTML outputs.
   Assumes the caller has already run generate + build (e.g. via the
   run-unit-tests action with run-check: 'false').
 inputs:

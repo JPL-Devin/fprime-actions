@@ -1,26 +1,27 @@
 """Mirror per-module + global coverage outputs into the baseline worktree.
 
 For each discovered module, copy ``<source>/<mod>/coverage/*`` into the
-baseline tree as ``<dest>/<mod>/<coverage-subdir>/*``.  If a module produced
+baseline tree as ``<dest>/<mod>/coverage-<kind>/*``.  If a module produced
 no ``summary.json`` (no UT, or gcovr emitted nothing) a placeholder
-``index.html`` is written in its place.
+``coverage.html`` is written in its place.
 
 The global ``--all`` run lives at ``<source>/coverage/*`` and is copied to
-``<dest>/<coverage-subdir>/*`` (or ``<dest>/`` when flattened).
+``<dest>/coverage-<kind>/*``.
 
 After mirroring, ``catalog.py`` is invoked to produce ``catalog.json`` and
-the top-level ``index.html``.
+the top-level ``index.html`` that summarises *both* UT and integration
+coverage (reading whatever kinds are present in the baseline worktree).
 
-This script is idempotent: it deletes the existing per-module and global
-coverage directories under ``<dest>`` before copying so a re-run cannot
-leave stale files behind.
+This script is idempotent: it deletes the existing per-module coverage
+directory for the *current kind* under ``<dest>`` before copying so a
+re-run cannot leave stale files behind.  The other kind's directory is
+preserved so a UT run does not clobber integration data and vice versa.
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
-import html
+import html as html_mod
 import json
 import shutil
 import sys
@@ -36,12 +37,19 @@ PLACEHOLDER_CSS = (
     ".meta { color: #57606a; font-size: 0.9rem; }"
 )
 
+VALID_KINDS = ("ut", "integration")
+
+
+def _subdir_for_kind(kind: str) -> str:
+    """Return the coverage subdirectory name for a given kind."""
+    return f"coverage-{kind}"
+
 
 def _catalog_relative_path(module_path: str, subdir: str) -> str:
     """Relative URL from a module's coverage dir back to the catalog root.
 
-    ``Drv/LinuxGpio`` with ``subdir="coverage"`` -> ``../../../index.html``
-    ``Drv/LinuxGpio`` with ``subdir=""``         -> ``../../index.html``
+    ``Drv/LinuxGpio`` with ``subdir="coverage-ut"`` -> ``../../../index.html``
+    ``Drv/LinuxGpio`` with ``subdir=""``             -> ``../../index.html``
     """
     depth = len([s for s in module_path.split("/") if s])
     if subdir:
@@ -54,22 +62,19 @@ def placeholder_html(module_path: str, reason: str, catalog_href: str) -> str:
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
-        f"<title>No coverage \u2014 {html.escape(module_path)}</title>"
+        f"<title>No coverage \u2014 {html_mod.escape(module_path)}</title>"
         f"<style>{PLACEHOLDER_CSS}</style></head><body>"
-        f"<h1>No coverage recorded for <code>{html.escape(module_path)}</code></h1>"
-        f"<p>{html.escape(reason)}</p>"
+        f"<h1>No coverage recorded for <code>{html_mod.escape(module_path)}</code></h1>"
+        f"<p>{html_mod.escape(reason)}</p>"
         f'<p class="meta">'
-        f'<a href="{html.escape(catalog_href)}">&larr; back to catalog</a>'
+        f'<a href="{html_mod.escape(catalog_href)}">&larr; back to catalog</a>'
         f"</p>"
         f"</body></html>\n"
     )
 
 
 def _coverage_dest(dest_root: Path, module_path: str, subdir: str) -> Path:
-    """Where this module's coverage artifacts land in the baseline tree.
-
-    With ``subdir=""`` the contents land directly in the module directory.
-    """
+    """Where this module's coverage artifacts land in the baseline tree."""
     base = dest_root / module_path
     return base / subdir if subdir else base
 
@@ -84,21 +89,15 @@ def _clean_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _copy_coverage_contents(src_dir: Path, dst_dir: Path, *, rename_index: bool) -> None:
+def _copy_coverage_contents(src_dir: Path, dst_dir: Path) -> None:
     """Copy gcovr outputs from ``src_dir`` to ``dst_dir``.
 
-    When ``rename_index`` is True, ``coverage.html`` is renamed to
-    ``index.html`` in the destination.  Sibling ``coverage.*.html`` detail
-    files keep gcovr's native names so the renamed index's relative links
-    continue to resolve.
+    Files are copied with their original names (no renaming).
     """
     for src in sorted(src_dir.iterdir()):
         if src.is_dir():
             continue
-        if rename_index and src.name == "coverage.html":
-            shutil.copy2(src, dst_dir / "index.html")
-        else:
-            shutil.copy2(src, dst_dir / src.name)
+        shutil.copy2(src, dst_dir / src.name)
 
 
 def mirror_module(
@@ -108,6 +107,7 @@ def mirror_module(
     module_path: str,
     has_ut: bool,
     subdir: str,
+    kind: str,
 ) -> bool:
     """Mirror a single module's coverage outputs.  Returns ``has_coverage``."""
     src_cov = source / module_path / "coverage"
@@ -118,35 +118,42 @@ def mirror_module(
     has_coverage = summary is not None and summary.line.total > 0
 
     if has_coverage:
-        _copy_coverage_contents(src_cov, dst_cov, rename_index=True)
+        _copy_coverage_contents(src_cov, dst_cov)
         return True
 
-    if not has_ut:
-        reason = (
-            "This module is registered with register_fprime_module() but does not "
-            "declare unit tests (no register_fprime_ut() call). No coverage data "
-            "is produced for unmeasurable modules."
-        )
+    if kind == "ut":
+        if not has_ut:
+            reason = (
+                "This module is registered with register_fprime_module() but does not "
+                "declare unit tests (no register_fprime_ut() call). No unit test "
+                "coverage data is produced for unmeasurable modules."
+            )
+        else:
+            reason = (
+                "This module declares unit tests but no coverage data was produced "
+                "for this run (gcovr emitted no measurable lines)."
+            )
     else:
         reason = (
-            "This module declares unit tests but no coverage data was produced "
-            "for this run (gcovr emitted no measurable lines)."
+            "No integration test coverage data was produced for this module "
+            "during this run."
         )
+
     catalog_href = _catalog_relative_path(module_path, subdir)
-    (dst_cov / "index.html").write_text(
+    (dst_cov / "coverage.html").write_text(
         placeholder_html(module_path, reason, catalog_href), encoding="utf-8"
     )
     return False
 
 
 def mirror_global(*, source: Path, dest: Path, subdir: str) -> None:
-    """Copy the global ``--all`` outputs (no rename of ``coverage-all.html``)."""
+    """Copy the global ``--all`` outputs."""
     src_cov = source / "coverage"
     if not src_cov.is_dir():
         return
     dst_cov = dest / subdir if subdir else dest
     _clean_dir(dst_cov)
-    _copy_coverage_contents(src_cov, dst_cov, rename_index=False)
+    _copy_coverage_contents(src_cov, dst_cov)
 
 
 def main(argv=None) -> int:
@@ -159,7 +166,12 @@ def main(argv=None) -> int:
         required=True,
         help="JSON-Lines module list from discover.py",
     )
-    parser.add_argument("--coverage-subdirectory", default="coverage")
+    parser.add_argument(
+        "--coverage-kind",
+        choices=VALID_KINDS,
+        default="ut",
+        help="Coverage kind: 'ut' (unit test) or 'integration'",
+    )
     parser.add_argument("--ref", required=True)
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
     parser.add_argument("--commit", required=True)
@@ -169,7 +181,8 @@ def main(argv=None) -> int:
     source = args.source.resolve()
     dest = args.dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
-    subdir = args.coverage_subdirectory
+    kind = args.coverage_kind
+    subdir = _subdir_for_kind(kind)
 
     if not args.modules_jsonl.is_file():
         print(f"mirror: missing module list {args.modules_jsonl}", file=sys.stderr)
@@ -187,14 +200,15 @@ def main(argv=None) -> int:
             module_path=rec["path"],
             has_ut=bool(rec.get("has_ut", False)),
             subdir=subdir,
+            kind=kind,
         )
 
     # Defer to catalog.py for catalog.json + top-level index.html.
+    # Catalog reads from dest (baseline worktree) and merges both coverage
+    # kinds (ut + integration) that are present on the branch.
     catalog_argv = [
-        "--source", str(source),
         "--dest", str(dest),
         "--modules-jsonl", str(args.modules_jsonl),
-        "--coverage-subdirectory", subdir,
         "--ref", args.ref,
         "--ref-type", args.ref_type,
         "--commit", args.commit,
@@ -205,7 +219,7 @@ def main(argv=None) -> int:
     if rc != 0:
         return rc
 
-    print(f"mirror: wrote {len(module_records)} modules into {dest}", file=sys.stderr)
+    print(f"mirror: wrote {len(module_records)} modules ({kind}) into {dest}", file=sys.stderr)
     return 0
 
 

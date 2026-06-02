@@ -1,0 +1,88 @@
+name: "F´ Coverage — Integration (common)"
+description: >
+  Post-process integration test coverage for all F´ modules.
+
+  This action assumes the caller has already:
+    1. Built the deployment with coverage flags
+       (e.g. -DCMAKE_CXX_FLAGS="--coverage" -DCMAKE_C_FLAGS="--coverage"
+       -DCMAKE_EXE_LINKER_FLAGS="--coverage" passed through generate-args).
+    2. Run all integration test suites (potentially multiple pytest
+       invocations) so that .gcda files reflect the cumulative coverage
+       from every test.
+
+  The action then:
+    - Discovers F´ modules via register_fprime_module() in CMakeLists.txt.
+    - Runs gcovr globally against the build cache for headline numbers.
+    - Runs gcovr per-module with --filter <source-dir> to attribute
+      coverage to each component individually.
+
+  The resulting summary.json + HTML outputs live in the same working tree
+  layout as coverage-common so they can be fed to coverage-check (PR) or
+  coverage-update (push) with coverage-kind: integration.
+inputs:
+  working-directory:
+    description: "Top-level project root (contains CMakeLists.txt, Fw/, Svc/)"
+    required: false
+    default: "."
+  build-cache:
+    description: >
+      Path to the CMake build cache directory that contains .gcno and
+      .gcda files.  This is always required — the action does not
+      auto-detect the build cache.
+    required: true
+  strict:
+    description: >
+      When 'true', fail the action if any per-module gcovr invocation
+      fails.  Default 'false' so individual failures surface as missing
+      coverage in the catalog without stopping the whole CI job.
+    required: false
+    default: "false"
+  debug:
+    description: >
+      When 'true', pass -v to gcovr for verbose output.  Useful for
+      diagnosing coverage-instrumented builds and gcovr filter issues.
+    required: false
+    default: "false"
+outputs:
+  modules-jsonl:
+    description: "Path to the JSON-Lines file listing discovered modules"
+    value: ${{ steps.discover.outputs.modules-jsonl }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Discover modules"
+      id: discover
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+      run: |
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > modules.jsonl
+        echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
+        echo "Discovered $(wc -l < modules.jsonl) modules"
+
+    - name: "Post-process integration coverage"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        BUILD_CACHE: ${{ inputs.build-cache }}
+        STRICT: ${{ inputs.strict }}
+        DEBUG: ${{ inputs.debug }}
+      run: |
+        STRICT_FLAG=""
+        if [ "${STRICT}" = "true" ]; then
+          STRICT_FLAG="--strict"
+        fi
+        DEBUG_FLAG=""
+        if [ "${DEBUG}" = "true" ]; then
+          DEBUG_FLAG="--debug"
+        fi
+        python3 "${ACTION_PATH}/scripts/run_integration_coverage.py" \
+          --project-root . \
+          --build-cache "$BUILD_CACHE" \
+          --modules-jsonl "$MODULES_JSONL" \
+          ${STRICT_FLAG} \
+          ${DEBUG_FLAG}

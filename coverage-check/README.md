@@ -42,17 +42,18 @@ The caller must have:
     coverage-kind: ut
 ```
 
-### Integration coverage example
+### Integration coverage example (with suffix)
 
 ```yaml
 - uses: nasa/fprime-actions/coverage-integration-common@devel
   id: cov
   with:
     build-cache: build-fprime-automatic-native-coverage
+    suffix: int              # produces coverage-kind: integration-int
 - uses: nasa/fprime-actions/coverage-check@devel
   with:
     modules-jsonl: ${{ steps.cov.outputs.modules-jsonl }}
-    coverage-kind: integration
+    coverage-kind: ${{ steps.cov.outputs.coverage-kind }}
 ```
 
 gcovr is provided by `fprime-tools`'s pip dependencies (via the `setup`
@@ -91,12 +92,12 @@ posted by the companion `coverage-comment` workflow, which runs on
 |----------------------------|--------------------------------------|------------------------------------------------------------------------------------------------------|
 | `working-directory`        | `.`                                  | Directory the coverage outputs were produced in (should match `coverage-common`).                    |
 | `modules-jsonl`            | (required)                           | Path to the JSON-Lines file produced by `coverage-common` (`modules-jsonl` output).                  |
-| `coverage-kind`            | `ut`                                 | Coverage kind: `ut` (unit test) or `integration`. Controls baseline subdirectory and comment marker. |
+| `coverage-kind`            | `ut`                                 | Coverage kind slug (e.g. `ut`, `integration-int`, `integration-hil-arm`). Controls baseline subdirectory and comment marker. |
 | `baseline-branch-prefix`   | `coverage`                           | Prefix applied to `<base_ref>` to form the baseline branch (`<prefix>/<base_ref>`).                  |
 | `regression-threshold`     | `0.5`                                | Percentage points of line-coverage drop tolerated per module.                                         |
 | `fail-on-regression`       | `false`                              | If `true`, the action exits non-zero when any module regresses beyond the threshold.                 |
-| `comment-marker`           | (auto from kind)                     | Hidden HTML marker used to find and edit the sticky PR comment. Auto: `<!-- fprime-coverage-comment -->` for ut, `<!-- fprime-integration-coverage-comment -->` for integration. |
-| `artifact-name`            | (auto from kind)                     | Workflow-artifact name. Auto: `fprime-coverage-comment` for ut, `fprime-integration-coverage-comment` for integration. |
+| `comment-marker`           | (auto from kind)                     | Hidden HTML marker for the sticky PR comment. Auto-derived as `<!-- fprime-<kind>-coverage-comment -->`. |
+| `artifact-name`            | (auto from kind)                     | Workflow-artifact name. Auto-derived as `fprime-<kind>-coverage-comment`. |
 | `artifact-retention-days`  | `7`                                  | Days to retain the uploaded artifact (max 90).                                                       |
 
 ## Outputs
@@ -137,7 +138,7 @@ jobs:
           coverage-kind: ut
 ```
 
-### Integration coverage (PR side)
+### Integration coverage (PR side, with suffix)
 
 ```yaml
       # ... (after building with coverage flags and running integration tests)
@@ -145,11 +146,20 @@ jobs:
         id: intcov
         with:
           build-cache: build-fprime-automatic-native-coverage
+          suffix: int
       - uses: nasa/fprime-actions/coverage-check@devel
         with:
           modules-jsonl: ${{ steps.intcov.outputs.modules-jsonl }}
-          coverage-kind: integration
+          coverage-kind: ${{ steps.intcov.outputs.coverage-kind }}
 ```
 
-Both UT and integration checks use **separate comment markers**, so their
-sticky PR comments do not collide.
+Each coverage kind gets **separate comment and summary markers**, so
+multiple coverage types (UT, integration-int, integration-hil-arm) can
+coexist on the same PR without colliding.
+
+### Summary comment
+
+In addition to the regression/delta comment, `coverage-check` also
+uploads a **separate summary artifact** with absolute coverage numbers
+for each module (no deltas).  The companion `coverage-comment` action
+can post both as separate sticky comments.

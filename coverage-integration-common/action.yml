@@ -37,6 +37,16 @@ inputs:
       coverage in the catalog without stopping the whole CI job.
     required: false
     default: "false"
+  suffix:
+    description: >
+      Platform/variant suffix appended to the coverage kind slug.
+      For example 'int' produces coverage-kind 'integration-int' and
+      subdirectory 'coverage-integration-int/'.  Use 'hil-arm' for
+      hardware-in-the-loop ARM, etc.  The calling workflow supplies
+      this to differentiate multiple integration coverage runs on the
+      same baseline branch.
+    required: false
+    default: "int"
   debug:
     description: >
       When 'true', pass -v to gcovr for verbose output.  Useful for
@@ -47,6 +57,9 @@ outputs:
   modules-jsonl:
     description: "Path to the JSON-Lines file listing discovered modules"
     value: ${{ steps.discover.outputs.modules-jsonl }}
+  coverage-kind:
+    description: "Resolved coverage kind slug (e.g. 'integration-int', 'integration-hil-arm')"
+    value: ${{ steps.kind.outputs.coverage-kind }}
 
 runs:
   using: "composite"
@@ -61,6 +74,18 @@ runs:
         python3 "${COMMON_PATH}/scripts/discover.py" --root . > modules.jsonl
         echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
         echo "Discovered $(wc -l < modules.jsonl) modules"
+
+    - name: "Resolve coverage kind"
+      id: kind
+      shell: bash
+      env:
+        SUFFIX: ${{ inputs.suffix }}
+      run: |
+        if [ -n "$SUFFIX" ]; then
+          echo "coverage-kind=integration-${SUFFIX}" >> "$GITHUB_OUTPUT"
+        else
+          echo "coverage-kind=integration" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: "Post-process integration coverage"
       working-directory: ${{ inputs.working-directory }}

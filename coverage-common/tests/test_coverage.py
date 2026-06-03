@@ -115,8 +115,8 @@ def test_summary_load_parses_gcovr_json():
     assert s.branch.percent == 87.5
 
 
-def test_mirror_module_keeps_coverage_html_name():
-    """coverage.html is NOT renamed to index.html (new behavior)."""
+def test_mirror_module_renames_coverage_html_to_index():
+    """coverage.html IS renamed to index.html (each kind has its own subdir)."""
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
         dest = Path(tmp) / "dest"
@@ -132,8 +132,8 @@ def test_mirror_module_keeps_coverage_html_name():
         assert has_cov is True
         dst_cov = dest / mod_path / "coverage-ut"
         assert (dst_cov / "summary.json").is_file()
-        assert (dst_cov / "coverage.html").is_file(), "coverage.html should keep its name"
-        assert not (dst_cov / "index.html").exists(), "index.html should NOT exist"
+        assert (dst_cov / "index.html").is_file(), "coverage.html should be renamed to index.html"
+        assert not (dst_cov / "coverage.html").exists(), "coverage.html should NOT exist after rename"
         assert (dst_cov / "coverage.123.html").is_file(), "sibling detail file must be preserved"
 
 
@@ -151,7 +151,7 @@ def test_mirror_module_writes_placeholder_when_no_ut():
             subdir="coverage-ut", kind="ut",
         )
         assert has_cov is False
-        placeholder = dest / mod_path / "coverage-ut" / "coverage.html"
+        placeholder = dest / mod_path / "coverage-ut" / "index.html"
         assert placeholder.is_file()
         body = placeholder.read_text(encoding="utf-8")
         assert "No coverage recorded" in body
@@ -172,10 +172,10 @@ def test_mirror_integration_placeholder():
 
         has_cov = mirror.mirror_module(
             source=source, dest=dest, module_path=mod_path, has_ut=True,
-            subdir="coverage-integration", kind="integration",
+            subdir="coverage-integration-int", kind="integration-int",
         )
         assert has_cov is False
-        placeholder = dest / mod_path / "coverage-integration" / "coverage.html"
+        placeholder = dest / mod_path / "coverage-integration-int" / "index.html"
         assert placeholder.is_file()
         body = placeholder.read_text(encoding="utf-8")
         assert "integration test coverage" in body.lower()
@@ -185,7 +185,7 @@ def test_catalog_relative_path_math():
     # Sanity-check the back-link depth calculation for various inputs.
     assert mirror._catalog_relative_path("Drv/LinuxGpio", "coverage-ut") == "../../../index.html"
     assert mirror._catalog_relative_path("Drv/LinuxGpio", "") == "../../index.html"
-    assert mirror._catalog_relative_path("Fw/Cmd/Sub", "coverage-integration") == "../../../../index.html"
+    assert mirror._catalog_relative_path("Fw/Cmd/Sub", "coverage-integration-int") == "../../../../index.html"
     assert mirror._catalog_relative_path("TopLevel", "coverage-ut") == "../../index.html"
     assert mirror._catalog_relative_path("TopLevel", "") == "../index.html"
 
@@ -243,24 +243,23 @@ def test_mirror_preserves_other_kind():
 
 
 def test_catalog_combined_landing_page():
-    """Catalog produces a combined index.html with both UT and integration data."""
+    """Catalog produces a combined index.html with UT and integration data."""
     with tempfile.TemporaryDirectory() as tmp:
         dest = Path(tmp)
 
         # Simulate baseline worktree with both kinds for some modules.
         for mod_path in ["Svc/CmdDispatcher", "Svc/Health", "Drv/I2c"]:
-            # UT coverage
             ut_dir = dest / mod_path / "coverage-ut"
             ut_dir.mkdir(parents=True)
             shutil.copy2(FIXTURES / "summary_high.json", ut_dir / "summary.json")
-            (ut_dir / "coverage.html").write_text("<html>ut report</html>", encoding="utf-8")
+            (ut_dir / "index.html").write_text("<html>ut report</html>", encoding="utf-8")
 
-        # Integration coverage only for some
+        # Integration-int coverage only for some
         for mod_path in ["Svc/CmdDispatcher", "Drv/I2c"]:
-            int_dir = dest / mod_path / "coverage-integration"
+            int_dir = dest / mod_path / "coverage-integration-int"
             int_dir.mkdir(parents=True)
             shutil.copy2(FIXTURES / "summary_mid.json", int_dir / "summary.json")
-            (int_dir / "coverage.html").write_text("<html>int report</html>", encoding="utf-8")
+            (int_dir / "index.html").write_text("<html>int report</html>", encoding="utf-8")
 
         # Module without coverage at all
         (dest / "Drv" / "LinuxGpio" / "coverage-ut").mkdir(parents=True)
@@ -270,10 +269,10 @@ def test_catalog_combined_landing_page():
         shutil.copy2(FIXTURES / "summary_high.json", dest / "coverage-ut" / "summary.json")
         (dest / "coverage-ut" / "coverage-all.html").write_text("<html>global ut</html>", encoding="utf-8")
 
-        # Global integration
-        (dest / "coverage-integration").mkdir(parents=True)
-        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration" / "summary.json")
-        (dest / "coverage-integration" / "coverage-all.html").write_text("<html>global int</html>", encoding="utf-8")
+        # Global integration-int
+        (dest / "coverage-integration-int").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration-int" / "summary.json")
+        (dest / "coverage-integration-int" / "coverage-all.html").write_text("<html>global int</html>", encoding="utf-8")
 
         modules_jsonl = _modules_jsonl([
             {"path": "Svc/CmdDispatcher", "has_ut": True},
@@ -298,35 +297,29 @@ def test_catalog_combined_landing_page():
         assert cat_doc["commit"] == "deadbeefcafe1234"
         assert len(cat_doc["modules"]) == 4
 
-        # Check per-module kind entries
+        # Check per-module kind entries (dynamically discovered)
         by_path = {m["path"]: m for m in cat_doc["modules"]}
         assert by_path["Svc/CmdDispatcher"]["ut"]["has_coverage"] is True
-        assert by_path["Svc/CmdDispatcher"]["integration"]["has_coverage"] is True
+        assert by_path["Svc/CmdDispatcher"]["integration-int"]["has_coverage"] is True
         assert by_path["Svc/Health"]["ut"]["has_coverage"] is True
-        assert by_path["Svc/Health"]["integration"]["has_coverage"] is False
+        # Svc/Health has no integration-int dir so no entry expected
         assert by_path["Drv/LinuxGpio"]["ut"]["has_coverage"] is False
-        assert by_path["Drv/LinuxGpio"]["integration"]["has_coverage"] is False
 
         # Overall entries
         assert cat_doc["overall"]["ut"] is not None
         assert cat_doc["overall"]["ut"]["line_pct"] == 98.0
-        assert cat_doc["overall"]["integration"] is not None
+        assert cat_doc["overall"]["integration-int"] is not None
 
         index_html = (dest / "index.html").read_text(encoding="utf-8")
-        # Spot-check structure
         assert "<details" in index_html and "Svc/" in index_html and "Drv/" in index_html
         assert "Svc/CmdDispatcher" in index_html
         assert "Drv/LinuxGpio" in index_html
-        # Both kinds appear
         assert "unit test" in index_html
-        assert "integration" in index_html
-        # Kind column in table
+        assert "integration (int)" in index_html
         assert ">Kind</th>" in index_html
-        # All three coverage columns present
         assert ">Line</th>" in index_html
         assert ">Function</th>" in index_html
         assert ">Branch</th>" in index_html
-        # Color classes applied
         assert "pct-green" in index_html
 
 
@@ -379,8 +372,8 @@ def test_compare_flags_regression_and_new_module():
         assert "-8.33" in body  # function delta: mid(85.0) - high(93.33)
         assert "Svc/Foo" in body
         assert "#### New modules" in body
-        assert "#### Modules without UTs" in body
-        assert "Drv/LinuxGpio" in body
+        # "Modules without UTs" section is removed for all kinds
+        assert "Modules without UTs" not in body
         # Kind label in header
         assert "Unit Test coverage report" in body
         regression_list = json.loads(regs.read_text(encoding="utf-8"))
@@ -401,8 +394,8 @@ def test_compare_flags_regression_and_new_module():
         assert rc2 == 1
 
 
-def test_compare_integration_kind():
-    """compare works with --coverage-kind integration."""
+def test_compare_integration_kind_with_suffix():
+    """compare works with --coverage-kind integration-int (with suffix)."""
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
         baseline = Path(tmp) / "baseline"
@@ -414,11 +407,11 @@ def test_compare_integration_kind():
         (source / "coverage").mkdir(exist_ok=True)
         shutil.copy2(FIXTURES / "summary_mid.json", source / "coverage/summary.json")
 
-        # Baseline uses coverage-integration subdir
-        (baseline / "Svc" / "CmdDispatcher" / "coverage-integration").mkdir(parents=True)
-        shutil.copy2(FIXTURES / "summary_high.json", baseline / "Svc/CmdDispatcher/coverage-integration/summary.json")
-        (baseline / "coverage-integration").mkdir(exist_ok=True)
-        shutil.copy2(FIXTURES / "summary_high.json", baseline / "coverage-integration/summary.json")
+        # Baseline uses coverage-integration-int subdir
+        (baseline / "Svc" / "CmdDispatcher" / "coverage-integration-int").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", baseline / "Svc/CmdDispatcher/coverage-integration-int/summary.json")
+        (baseline / "coverage-integration-int").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", baseline / "coverage-integration-int/summary.json")
 
         modules_jsonl = _modules_jsonl([
             {"path": "Svc/CmdDispatcher", "has_ut": True},
@@ -429,16 +422,117 @@ def test_compare_integration_kind():
             "--source", str(source),
             "--baseline", str(baseline),
             "--modules-jsonl", str(modules_jsonl),
-            "--coverage-kind", "integration",
+            "--coverage-kind", "integration-int",
             "--base-ref", "devel",
             "--threshold", "0.5",
             "--output", str(out),
         ])
         assert rc == 0
         body = out.read_text(encoding="utf-8")
-        assert "Integration coverage report" in body
-        # No "Modules without UTs" section for integration kind
+        assert "Integration (int) coverage report" in body
         assert "Modules without UTs" not in body
+
+
+def test_compare_summary_comment_output():
+    """--summary-output writes a separate per-module summary markdown."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "src"
+        baseline = Path(tmp) / "baseline"
+        source.mkdir()
+        baseline.mkdir()
+
+        (source / "Svc" / "CmdDispatcher" / "coverage").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", source / "Svc/CmdDispatcher/coverage/summary.json")
+        (source / "coverage").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage/summary.json")
+
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+        ])
+        out = Path(tmp) / "comment.md"
+        summary_out = Path(tmp) / "summary.md"
+
+        rc = compare.main([
+            "--source", str(source),
+            "--baseline", str(baseline),
+            "--modules-jsonl", str(modules_jsonl),
+            "--coverage-kind", "ut",
+            "--base-ref", "devel",
+            "--threshold", "0.5",
+            "--output", str(out),
+            "--summary-output", str(summary_out),
+            "--baseline-missing",
+        ])
+        assert rc == 0
+        body = summary_out.read_text(encoding="utf-8")
+        assert "Unit Test coverage summary" in body
+        assert "98.00" in body  # line percent from summary_high
+        assert "Svc/CmdDispatcher" in body
+        assert "<!-- fprime-coverage-summary-comment -->" in body
+
+
+def test_catalog_with_multiple_suffixes():
+    """Catalog discovers multiple integration suffixes dynamically."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp)
+
+        mod_path = "Svc/CmdDispatcher"
+        # UT coverage
+        ut_dir = dest / mod_path / "coverage-ut"
+        ut_dir.mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", ut_dir / "summary.json")
+        (ut_dir / "index.html").write_text("<html>ut report</html>", encoding="utf-8")
+
+        # integration-int coverage
+        int_dir = dest / mod_path / "coverage-integration-int"
+        int_dir.mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", int_dir / "summary.json")
+        (int_dir / "index.html").write_text("<html>int report</html>", encoding="utf-8")
+
+        # integration-hil-arm coverage
+        hil_dir = dest / mod_path / "coverage-integration-hil-arm"
+        hil_dir.mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", hil_dir / "summary.json")
+        (hil_dir / "index.html").write_text("<html>hil-arm report</html>", encoding="utf-8")
+
+        # Global overalls
+        (dest / "coverage-ut").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", dest / "coverage-ut" / "summary.json")
+        (dest / "coverage-integration-int").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration-int" / "summary.json")
+        (dest / "coverage-integration-hil-arm").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration-hil-arm" / "summary.json")
+
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+        ])
+
+        rc = catalog.main([
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--ref-type", "branch",
+            "--commit", "abc123",
+            "--generated-at", "2026-05-29T00:00:00Z",
+        ])
+        assert rc == 0
+
+        cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
+        by_path = {m["path"]: m for m in cat_doc["modules"]}
+        mod = by_path["Svc/CmdDispatcher"]
+        assert mod["ut"]["has_coverage"] is True
+        assert mod["integration-int"]["has_coverage"] is True
+        assert mod["integration-hil-arm"]["has_coverage"] is True
+
+        # Overall entries
+        assert cat_doc["overall"]["ut"] is not None
+        assert cat_doc["overall"]["integration-int"] is not None
+        assert cat_doc["overall"]["integration-hil-arm"] is not None
+
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert "unit test" in index_html
+        assert "integration (int)" in index_html
+        assert "integration (hil-arm)" in index_html
 
 
 def test_compare_baseline_missing_reports_no_baseline():
@@ -482,7 +576,7 @@ TESTS = [
     test_discover_ignores_commented_out_calls,
     test_summary_load_handles_missing_file_and_zero_total,
     test_summary_load_parses_gcovr_json,
-    test_mirror_module_keeps_coverage_html_name,
+    test_mirror_module_renames_coverage_html_to_index,
     test_mirror_module_writes_placeholder_when_no_ut,
     test_mirror_integration_placeholder,
     test_catalog_relative_path_math,
@@ -490,7 +584,9 @@ TESTS = [
     test_mirror_preserves_other_kind,
     test_catalog_combined_landing_page,
     test_compare_flags_regression_and_new_module,
-    test_compare_integration_kind,
+    test_compare_integration_kind_with_suffix,
+    test_compare_summary_comment_output,
+    test_catalog_with_multiple_suffixes,
     test_compare_baseline_missing_reports_no_baseline,
 ]
 

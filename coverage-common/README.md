@@ -79,14 +79,17 @@ test fixtures.
   `--strict` (or set the `strict` input on the action to `'true'`) to
   propagate per-module failures as a non-zero exit.
 * `compare.py` &mdash; PR-side delta + sticky comment markdown (used by
-  `coverage-check`). Supports `--coverage-kind ut|integration`.
+  `coverage-check`). Accepts any `--coverage-kind` slug (e.g. `ut`,
+  `integration-int`, `integration-hil-arm`). Also produces a standalone
+  summary comment (`--summary-output`) with absolute coverage numbers.
 * `mirror.py` &mdash; copies coverage outputs into the baseline worktree,
-  writes placeholder pages, invokes `catalog.py` (used by `coverage-update`).
-  Supports `--coverage-kind ut|integration`; only writes the current kind's
-  subdirectory, preserving the other kind's data.
+  renames `coverage.html` → `index.html` in each subdirectory, writes
+  placeholder pages, invokes `catalog.py` (used by `coverage-update`).
+  Accepts any `--coverage-kind` slug; only writes the current kind's
+  subdirectory, preserving all other kinds' data.
 * `catalog.py` &mdash; produces `catalog.json` + folder-tree `index.html`
-  with **two rows per module** (unit test + integration) by scanning both
-  `coverage-ut/` and `coverage-integration/` in the baseline worktree.
+  by **dynamically scanning** all `coverage-*` subdirectories in the
+  baseline worktree (supports any number of coverage kinds/suffixes).
 * `_summary.py` &mdash; shared gcovr `--json-summary` reader.
 
 ## Tests

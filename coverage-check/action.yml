@@ -24,9 +24,11 @@ inputs:
     required: true
   coverage-kind:
     description: >
-      Coverage kind: 'ut' (unit test, default) or 'integration'.
-      Controls the baseline subdirectory used for comparison
-      (coverage-ut/ or coverage-integration/).
+      Coverage kind slug (e.g. 'ut', 'integration-int',
+      'integration-hil-arm').  Controls the baseline subdirectory
+      used for comparison (coverage-<kind>/).  For integration
+      coverage, pass the output of coverage-integration-common's
+      'coverage-kind' output.
     required: false
     default: "ut"
   baseline-branch-prefix:
@@ -78,23 +80,18 @@ runs:
         ARTIFACT_INPUT: ${{ inputs.artifact-name }}
       run: |
         if [ -z "$MARKER_INPUT" ]; then
-          if [ "$COVERAGE_KIND" = "integration" ]; then
-            echo "marker=<!-- fprime-integration-coverage-comment -->" >> "$GITHUB_OUTPUT"
-          else
-            echo "marker=<!-- fprime-coverage-comment -->" >> "$GITHUB_OUTPUT"
-          fi
+          echo "marker=<!-- fprime-${COVERAGE_KIND}-coverage-comment -->" >> "$GITHUB_OUTPUT"
         else
           echo "marker=$MARKER_INPUT" >> "$GITHUB_OUTPUT"
         fi
         if [ -z "$ARTIFACT_INPUT" ]; then
-          if [ "$COVERAGE_KIND" = "integration" ]; then
-            echo "artifact=fprime-integration-coverage-comment" >> "$GITHUB_OUTPUT"
-          else
-            echo "artifact=fprime-coverage-comment" >> "$GITHUB_OUTPUT"
-          fi
+          echo "artifact=fprime-${COVERAGE_KIND}-coverage-comment" >> "$GITHUB_OUTPUT"
         else
           echo "artifact=$ARTIFACT_INPUT" >> "$GITHUB_OUTPUT"
         fi
+        # Summary artifact/marker are always derived
+        echo "summary-marker=<!-- fprime-${COVERAGE_KIND}-coverage-summary-comment -->" >> "$GITHUB_OUTPUT"
+        echo "summary-artifact=fprime-${COVERAGE_KIND}-coverage-summary" >> "$GITHUB_OUTPUT"
 
     - name: "Fetch baseline branch"
       id: baseline
@@ -145,6 +142,7 @@ runs:
         if [ "$BASELINE_MISSING" = "true" ]; then
           MISSING_FLAG="--baseline-missing"
         fi
+        SUMMARY_PATH="$OUT_DIR/summary.md"
         python3 "${COMMON_PATH}/scripts/compare.py" \
           --source . \
           --baseline "$BASELINE_DIR" \
@@ -154,10 +152,12 @@ runs:
           --threshold "$THRESHOLD" \
           --comment-marker "$MARKER" \
           --output "$COMMENT_PATH" \
+          --summary-output "$SUMMARY_PATH" \
           --regressions-output "$REGRESSIONS_PATH" \
           $FAIL_FLAG $MISSING_FLAG
         echo "comment-path=$COMMENT_PATH" >> "$GITHUB_OUTPUT"
         echo "regressions-json-path=$REGRESSIONS_PATH" >> "$GITHUB_OUTPUT"
+        echo "summary-path=$SUMMARY_PATH" >> "$GITHUB_OUTPUT"
 
     - name: "Stage comment artifact"
       id: stage
@@ -190,6 +190,33 @@ runs:
       with:
         name: ${{ steps.defaults.outputs.artifact }}
         path: ${{ steps.stage.outputs.artifact-dir }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.artifact-retention-days }}
+        overwrite: true
+
+    - name: "Stage summary artifact"
+      id: stage-summary
+      if: steps.compare.outputs.summary-path != ''
+      shell: bash
+      env:
+        SUMMARY_PATH: ${{ steps.compare.outputs.summary-path }}
+        SUMMARY_MARKER: ${{ steps.defaults.outputs.summary-marker }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        ARTIFACT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-summary-artifact"
+        rm -rf "$ARTIFACT_DIR"
+        mkdir -p "$ARTIFACT_DIR"
+        cp "$SUMMARY_PATH" "$ARTIFACT_DIR/comment.md"
+        echo "$PR_NUMBER" > "$ARTIFACT_DIR/pr-number.txt"
+        echo "$SUMMARY_MARKER" > "$ARTIFACT_DIR/comment-marker.txt"
+        echo "artifact-dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+
+    - name: "Upload summary artifact"
+      if: steps.stage-summary.outputs.artifact-dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.defaults.outputs.summary-artifact }}
+        path: ${{ steps.stage-summary.outputs.artifact-dir }}
         if-no-files-found: error
         retention-days: ${{ inputs.artifact-retention-days }}
         overwrite: true

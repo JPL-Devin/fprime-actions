@@ -1,10 +1,11 @@
 """Generate ``catalog.json`` and the top-level folder-tree ``index.html``.
 
-The catalog reads from the baseline worktree (``--dest``), scanning both
-``coverage-ut/`` and ``coverage-integration/`` subdirectories for each
-module.  The resulting landing page shows **two rows per module** (one for
-unit-test coverage, one for integration-test coverage) so reviewers can
-see both at a glance.
+The catalog reads from the baseline worktree (``--dest``), dynamically
+scanning all ``coverage-*`` subdirectories for each module (e.g.
+``coverage-ut/``, ``coverage-integration-int/``,
+``coverage-integration-hil-arm/``).  The resulting landing page shows one
+row per module per coverage kind so reviewers can see everything at a
+glance.
 
 Inputs:
     * A list of discovered modules (path, has_ut) from ``discover.py``.
@@ -37,8 +38,17 @@ from _summary import Summary, Totals, load_summary
 
 SCHEMA_VERSION = 2
 
-COVERAGE_KINDS = ("ut", "integration")
-KIND_LABELS = {"ut": "unit test", "integration": "integration"}
+def _kind_label(kind: str) -> str:
+    """Human-readable label for a coverage kind slug."""
+    if kind == "ut":
+        return "unit test"
+    # e.g. "integration-int" -> "integration (int)"
+    if kind.startswith("integration-"):
+        suffix = kind[len("integration-"):]
+        return f"integration ({suffix})"
+    if kind == "integration":
+        return "integration"
+    return kind
 
 CSS = """\
 * { box-sizing: border-box; }
@@ -160,7 +170,7 @@ def _render_kind_row(mod: ModuleEntry, kind: str) -> str:
     """Render one table row for a module+kind combination."""
     ke = mod.kinds.get(kind)
     path_esc = html.escape(mod.path)
-    kind_label = KIND_LABELS.get(kind, kind)
+    kind_label = _kind_label(kind)
 
     if ke is not None and ke.has_coverage and ke.summary is not None:
         report_esc = html.escape(ke.report)
@@ -180,13 +190,9 @@ def _render_kind_row(mod: ModuleEntry, kind: str) -> str:
         branch_html = _render_cell_pct(0.0, False)
         name_cell = path_esc
 
-    note = ""
-    if kind == "ut" and not mod.has_ut and (ke is None or not ke.has_coverage):
-        note = ' <span class="no-ut">(no UT)</span>'
-
     return (
         f'<tr class="row">'
-        f'<td>{name_cell}{note}</td>'
+        f'<td>{name_cell}</td>'
         f'<td class="kind-label">{html.escape(kind_label)}</td>'
         f"{line_html}{function_html}{branch_html}"
         f"</tr>"
@@ -194,14 +200,16 @@ def _render_kind_row(mod: ModuleEntry, kind: str) -> str:
 
 
 def _present_kinds(entries: List[ModuleEntry]) -> List[str]:
-    """Return the list of kinds that have at least one module with data."""
+    """Return the list of kinds that have at least one module with data.
+
+    Sorted with ``ut`` first, then alphabetically.
+    """
     present = set()
     for entry in entries:
         for kind, ke in entry.kinds.items():
             if ke.has_coverage:
                 present.add(kind)
-    # Return in canonical order
-    return [k for k in COVERAGE_KINDS if k in present]
+    return sorted(present, key=lambda k: (k != "ut", k))
 
 
 def _render_group(group: Group, kinds: List[str]) -> str:
@@ -212,7 +220,7 @@ def _render_group(group: Group, kinds: List[str]) -> str:
     for kind in kinds:
         rollup = group.rollup(kind)
         has_cov = rollup.line.total > 0
-        label = KIND_LABELS.get(kind, kind)
+        label = _kind_label(kind)
         if has_cov:
             cls = _pct_class(rollup.line.percent, True)
             parts.append(
@@ -244,7 +252,7 @@ def _render_group(group: Group, kinds: List[str]) -> str:
 
 def _render_overall_kind(kind: str, summary: Optional[Summary], report_href: str) -> str:
     """Render one line of the overall section for a given kind."""
-    label = KIND_LABELS.get(kind, kind)
+    label = _kind_label(kind)
     if summary is not None and summary.line.total > 0:
         return (
             f'<div class="overall-row">'
@@ -274,14 +282,15 @@ def render_index_html(
 ) -> str:
     """Render the folder-tree catalog page with both UT and integration coverage."""
     kinds = _present_kinds(entries)
-    # If no kind has data yet, show all known kinds so the page isn't empty
+    # If no kind has data yet, show at least 'ut' so the page isn't empty
     if not kinds:
-        kinds = list(COVERAGE_KINDS)
+        kinds = ["ut"]
 
     groups = _group_modules(entries)
 
     overall_lines = []
-    for kind in COVERAGE_KINDS:
+    all_overall_kinds = sorted(overalls.keys(), key=lambda k: (k != "ut", k))
+    for kind in all_overall_kinds:
         summary, report_href = overalls.get(kind, (None, ""))
         overall_lines.append(_render_overall_kind(kind, summary, report_href))
     overall_html = "\n".join(overall_lines)
@@ -312,13 +321,20 @@ def build_catalog(
     generated_at: str,
     overalls: dict,  # kind -> (Optional[Summary], report_href)
 ) -> dict:
+    # Collect all kinds across modules and overalls
+    all_kinds = set()
+    for m in modules:
+        all_kinds.update(m.kinds.keys())
+    all_kinds.update(overalls.keys())
+    all_kinds_sorted = sorted(all_kinds, key=lambda k: (k != "ut", k))
+
     out_modules = []
     for m in modules:
         entry: dict = {
             "path": m.path,
             "has_ut": m.has_ut,
         }
-        for kind in COVERAGE_KINDS:
+        for kind in all_kinds_sorted:
             ke = m.kinds.get(kind)
             kind_entry: dict = {"has_coverage": False}
             if ke is not None:
@@ -332,7 +348,7 @@ def build_catalog(
         out_modules.append(entry)
 
     overall_entries = {}
-    for kind in COVERAGE_KINDS:
+    for kind in all_kinds_sorted:
         summary, report_href = overalls.get(kind, (None, ""))
         if summary is not None and summary.line.total > 0:
             oe = summary.to_catalog_entry()
@@ -389,31 +405,36 @@ def main(argv=None) -> int:
             path = rec["path"]
             has_ut = bool(rec.get("has_ut", False))
 
+            # Discover all coverage-* subdirs for this module
             kinds_dict: dict[str, KindEntry] = {}
-            for kind in COVERAGE_KINDS:
-                subdir = f"coverage-{kind}"
-                summary_file = dest / path / subdir / "summary.json"
-                summary = load_summary(summary_file)
-                has_coverage = summary is not None and summary.line.total > 0
-                report_path = f"{path}/{subdir}/coverage.html"
-                summary_rel = f"{path}/{subdir}/summary.json" if has_coverage else None
-                kinds_dict[kind] = KindEntry(
-                    kind=kind,
-                    has_coverage=has_coverage,
-                    report=report_path,
-                    summary_path=summary_rel,
-                    summary=summary,
-                )
+            mod_dir = dest / path
+            if mod_dir.is_dir():
+                for d in sorted(mod_dir.iterdir()):
+                    if d.is_dir() and d.name.startswith("coverage-"):
+                        kind = d.name[len("coverage-"):]
+                        summary_file = d / "summary.json"
+                        summary = load_summary(summary_file)
+                        has_coverage = summary is not None and summary.line.total > 0
+                        report_path = f"{path}/{d.name}/index.html"
+                        summary_rel = f"{path}/{d.name}/summary.json" if has_coverage else None
+                        kinds_dict[kind] = KindEntry(
+                            kind=kind,
+                            has_coverage=has_coverage,
+                            report=report_path,
+                            summary_path=summary_rel,
+                            summary=summary,
+                        )
 
             entries.append(ModuleEntry(path=path, has_ut=has_ut, kinds=kinds_dict))
 
-    # Load global overalls for each kind
+    # Discover global overalls from top-level coverage-* dirs
     overalls: dict[str, tuple] = {}
-    for kind in COVERAGE_KINDS:
-        subdir = f"coverage-{kind}"
-        overall_summary = load_summary(dest / subdir / "summary.json")
-        report_href = f"{subdir}/coverage-all.html"
-        overalls[kind] = (overall_summary, report_href)
+    for d in sorted(dest.iterdir()):
+        if d.is_dir() and d.name.startswith("coverage-"):
+            kind = d.name[len("coverage-"):]
+            overall_summary = load_summary(d / "summary.json")
+            report_href = f"{d.name}/coverage-all.html"
+            overalls[kind] = (overall_summary, report_href)
 
     catalog = build_catalog(
         modules=entries,

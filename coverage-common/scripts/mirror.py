@@ -3,19 +3,19 @@
 For each discovered module, copy ``<source>/<mod>/coverage/*`` into the
 baseline tree as ``<dest>/<mod>/coverage-<kind>/*``.  If a module produced
 no ``summary.json`` (no UT, or gcovr emitted nothing) a placeholder
-``coverage.html`` is written in its place.
+``index.html`` is written in its place.
 
 The global ``--all`` run lives at ``<source>/coverage/*`` and is copied to
 ``<dest>/coverage-<kind>/*``.
 
 After mirroring, ``catalog.py`` is invoked to produce ``catalog.json`` and
-the top-level ``index.html`` that summarises *both* UT and integration
-coverage (reading whatever kinds are present in the baseline worktree).
+the top-level ``index.html`` that summarises all coverage kinds (reading
+whatever ``coverage-*`` subdirectories are present in the baseline worktree).
 
 This script is idempotent: it deletes the existing per-module coverage
 directory for the *current kind* under ``<dest>`` before copying so a
-re-run cannot leave stale files behind.  The other kind's directory is
-preserved so a UT run does not clobber integration data and vice versa.
+re-run cannot leave stale files behind.  Other kinds' directories are
+preserved.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ PLACEHOLDER_CSS = (
     ".meta { color: #57606a; font-size: 0.9rem; }"
 )
 
-VALID_KINDS = ("ut", "integration")
+
 
 
 def _subdir_for_kind(kind: str) -> str:
@@ -92,12 +92,16 @@ def _clean_dir(path: Path) -> None:
 def _copy_coverage_contents(src_dir: Path, dst_dir: Path) -> None:
     """Copy gcovr outputs from ``src_dir`` to ``dst_dir``.
 
-    Files are copied with their original names (no renaming).
+    ``coverage.html`` is renamed to ``index.html`` so each subfolder is
+    directly browsable (no collision since each kind has its own subdir).
     """
     for src in sorted(src_dir.iterdir()):
         if src.is_dir():
             continue
-        shutil.copy2(src, dst_dir / src.name)
+        name = src.name
+        if name == "coverage.html":
+            name = "index.html"
+        shutil.copy2(src, dst_dir / name)
 
 
 def mirror_module(
@@ -140,7 +144,7 @@ def mirror_module(
         )
 
     catalog_href = _catalog_relative_path(module_path, subdir)
-    (dst_cov / "coverage.html").write_text(
+    (dst_cov / "index.html").write_text(
         placeholder_html(module_path, reason, catalog_href), encoding="utf-8"
     )
     return False
@@ -168,9 +172,8 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--coverage-kind",
-        choices=VALID_KINDS,
         default="ut",
-        help="Coverage kind: 'ut' (unit test) or 'integration'",
+        help="Coverage kind slug (e.g. 'ut', 'integration-int', 'integration-hil-arm')",
     )
     parser.add_argument("--ref", required=True)
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))

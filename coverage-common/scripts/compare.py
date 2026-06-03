@@ -23,7 +23,16 @@ from _summary import Summary, load_summary
 
 DEFAULT_COMMENT_MARKER = "<!-- fprime-coverage-comment -->"
 
-KIND_LABELS = {"ut": "Unit Test", "integration": "Integration"}
+def _kind_label(kind: str) -> str:
+    """Human-readable label for a coverage kind slug."""
+    if kind == "ut":
+        return "Unit Test"
+    if kind.startswith("integration-"):
+        suffix = kind[len("integration-"):]
+        return f"Integration ({suffix})"
+    if kind == "integration":
+        return "Integration"
+    return kind.replace("-", " ").title()
 
 
 @dataclass
@@ -98,11 +107,9 @@ def build_comment(
     changed: list[ModuleDelta] = []
     new_mods: list[ModuleDelta] = []
     removed_mods: list[ModuleDelta] = []
-    no_ut: list[ModuleDelta] = []
 
     for d in deltas:
-        if d.pr is None and d.baseline is None and not d.has_ut:
-            no_ut.append(d)
+        if d.pr is None and d.baseline is None:
             continue
         if d.pr is None and d.baseline is not None:
             removed_mods.append(d)
@@ -121,9 +128,8 @@ def build_comment(
     regressions.sort(key=lambda d: (d.line_delta or 0.0))
     new_mods.sort(key=lambda d: d.path)
     removed_mods.sort(key=lambda d: d.path)
-    no_ut.sort(key=lambda d: d.path)
 
-    kind_label = KIND_LABELS.get(coverage_kind, coverage_kind)
+    kind_label = _kind_label(coverage_kind)
 
     overall_line_pr = f"{overall_pr.line.percent:.2f}" if overall_pr else "&mdash;"
     overall_line_base = f"{overall_baseline.line.percent:.2f}" if overall_baseline else "&mdash;"
@@ -183,13 +189,50 @@ def build_comment(
             )
         lines.append("")
 
-    if coverage_kind == "ut" and no_ut:
-        lines.append("#### Modules without UTs")
-        lines.append(", ".join(f"`{d.path}`" for d in no_ut))
+    lines.append(marker)
+    return "\n".join(lines).rstrip() + "\n", regressions
+
+
+def build_summary_comment(
+    *,
+    deltas: List[ModuleDelta],
+    overall_pr: Optional[Summary],
+    coverage_kind: str,
+    marker: str,
+) -> str:
+    """Return a standalone summary markdown with absolute coverage numbers (no deltas)."""
+    kind_label = _kind_label(coverage_kind)
+
+    lines: list[str] = []
+    lines.append(f"### {kind_label} coverage summary")
+    lines.append("")
+
+    if overall_pr is not None:
+        lines.append(
+            f"**Overall:** {overall_pr.line.percent:.2f}% line, "
+            f"{overall_pr.function.percent:.2f}% function, "
+            f"{overall_pr.branch.percent:.2f}% branch"
+        )
+    else:
+        lines.append("**Overall:** no coverage data")
+    lines.append("")
+
+    covered = [d for d in deltas if d.pr is not None]
+    if covered:
+        covered.sort(key=lambda d: d.path)
+        lines.append("| Module | Line | Function | Branch |")
+        lines.append("|---|---:|---:|---:|")
+        for d in covered:
+            lines.append(
+                f"| `{d.path}` "
+                f"| {_format_pct(d.pr, 'line')} "
+                f"| {_format_pct(d.pr, 'function')} "
+                f"| {_format_pct(d.pr, 'branch')} |"
+            )
         lines.append("")
 
     lines.append(marker)
-    return "\n".join(lines).rstrip() + "\n", regressions
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def main(argv=None) -> int:
@@ -199,9 +242,14 @@ def main(argv=None) -> int:
     parser.add_argument("--modules-jsonl", type=Path, required=True)
     parser.add_argument(
         "--coverage-kind",
-        choices=("ut", "integration"),
         default="ut",
-        help="Coverage kind: 'ut' (unit test) or 'integration'",
+        help="Coverage kind slug (e.g. 'ut', 'integration-int', 'integration-hil-arm')",
+    )
+    parser.add_argument(
+        "--summary-output",
+        type=Path,
+        default=None,
+        help="If set, write a standalone summary markdown (absolute numbers, no deltas) to this path",
     )
     parser.add_argument("--base-ref", required=True, help="Base branch name for the comment header")
     parser.add_argument("--threshold", type=float, default=0.5)
@@ -256,6 +304,17 @@ def main(argv=None) -> int:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(markdown, encoding="utf-8")
+
+    if args.summary_output is not None:
+        summary_marker = args.comment_marker.replace("-comment", "-summary-comment")
+        summary_md = build_summary_comment(
+            deltas=deltas,
+            overall_pr=overall_pr,
+            coverage_kind=args.coverage_kind,
+            marker=summary_marker,
+        )
+        args.summary_output.parent.mkdir(parents=True, exist_ok=True)
+        args.summary_output.write_text(summary_md, encoding="utf-8")
 
     if args.regressions_output is not None:
         args.regressions_output.parent.mkdir(parents=True, exist_ok=True)

@@ -32,7 +32,7 @@ The caller must have generated coverage with `coverage-common` or
     coverage-kind: ut
 ```
 
-### Integration coverage
+### Integration coverage (with suffix)
 
 ```yaml
 # ... (after building with coverage flags and running integration tests)
@@ -40,10 +40,11 @@ The caller must have generated coverage with `coverage-common` or
   id: intcov
   with:
     build-cache: build-fprime-automatic-native-coverage
+    suffix: int
 - uses: nasa/fprime-actions/coverage-update@devel
   with:
     modules-jsonl: ${{ steps.intcov.outputs.modules-jsonl }}
-    coverage-kind: integration
+    coverage-kind: ${{ steps.intcov.outputs.coverage-kind }}
 ```
 
 gcovr is provided by `fprime-tools`'s pip dependencies (via the `setup`
@@ -65,11 +66,11 @@ permissions:
 2. Fetches or creates the baseline branch as a worktree (orphan branch on
    first push).
 3. Mirrors the per-module + global outputs for the current `coverage-kind`
-   into the worktree (`coverage-ut/` or `coverage-integration/`
-   subdirectories). The other kind's data is untouched.
+   into the worktree (e.g. `coverage-ut/`, `coverage-integration-int/`).
+   All other kinds' data is untouched.
 4. Regenerates the combined landing page (`index.html`) and machine-readable
-   `catalog.json` — both reflect whatever UT and integration data are
-   present on the branch.
+   `catalog.json` — both dynamically reflect all coverage kinds present
+   on the branch.
 5. Commits and pushes if there are changes.
 
 Forks are skipped automatically (no push from forks).
@@ -80,7 +81,7 @@ Forks are skipped automatically (no push from forks).
 |--------------------------|--------------|------------------------------------------------------------------------------------------------------|
 | `working-directory`      | `.`          | Directory the coverage outputs were produced in (should match `coverage-common`).                     |
 | `modules-jsonl`          | (required)   | Path to the JSON-Lines file produced by `coverage-common` (`modules-jsonl` output).                  |
-| `coverage-kind`          | `ut`         | Coverage kind: `ut` (unit test) or `integration`. Controls the subdirectory name on the baseline branch. |
+| `coverage-kind`          | `ut`         | Coverage kind slug (e.g. `ut`, `integration-int`, `integration-hil-arm`). Controls the subdirectory name on the baseline branch (`coverage-<kind>/`). |
 | `baseline-branch-prefix` | `coverage`   | Prefix applied to `<ref-name>` to form the baseline branch (`<prefix>/<ref-name>`).                  |
 | `ref`                    | `github.ref_name` | The git ref whose coverage is being recorded (e.g. `devel`).                                   |
 
@@ -94,31 +95,36 @@ Forks are skipped automatically (no push from forks).
 │   ├── summary.json
 │   ├── coverage-all.html
 │   └── coverage.*.html
-├── coverage-integration/            global integration run
+├── coverage-integration-int/        global integration (Linux int) run
 │   ├── summary.json
 │   ├── coverage-all.html
 │   └── coverage.*.html
+├── coverage-integration-hil-arm/    (optional, additional platform)
+│   └── ...
 ├── Svc/CmdDispatcher/
 │   ├── coverage-ut/
 │   │   ├── summary.json
-│   │   ├── coverage.html            gcovr's native per-module report
+│   │   ├── index.html               gcovr report (renamed from coverage.html)
 │   │   └── coverage.*.html
-│   └── coverage-integration/
-│       ├── summary.json
-│       ├── coverage.html
-│       └── coverage.*.html
+│   ├── coverage-integration-int/
+│   │   ├── summary.json
+│   │   ├── index.html
+│   │   └── coverage.*.html
+│   └── coverage-integration-hil-arm/
+│       └── ...
 ├── Drv/LinuxGpio/
 │   ├── coverage-ut/
-│   │   └── coverage.html            placeholder: "no coverage recorded"
-│   └── coverage-integration/
-│       └── coverage.html            placeholder
+│   │   └── index.html               placeholder: "no coverage recorded"
+│   └── coverage-integration-int/
+│       └── index.html               placeholder
 └── ...
 ```
 
-Each module has up to two subdirectories.  The combined `index.html` at
-the root shows **two rows per module** (one for unit test, one for
-integration) with line/function/branch percentages and links to each
-specific report.
+Each module has one subdirectory per coverage kind.  The combined
+`index.html` at the root shows **one row per kind per module**
+with line/function/branch percentages and links to each specific report.
+New kinds appear automatically when their `coverage-*` subdirectory is
+pushed.
 
 ## `catalog.json` schema (v2)
 
@@ -131,14 +137,16 @@ per-kind structure:
   "schema": 2,
   "overall": {
     "ut": { "line_pct": 98.0, ... },
-    "integration": { "line_pct": 42.1, ... }
+    "integration-int": { "line_pct": 42.1, ... },
+    "integration-hil-arm": { "line_pct": 38.5, ... }
   },
   "modules": [
     {
       "path": "Svc/CmdDispatcher",
       "has_ut": true,
       "ut": { "has_coverage": true, "line_pct": 98.0, ... },
-      "integration": { "has_coverage": true, "line_pct": 45.2, ... }
+      "integration-int": { "has_coverage": true, "line_pct": 45.2, ... },
+      "integration-hil-arm": { "has_coverage": true, "line_pct": 41.0, ... }
     }
   ]
 }
@@ -204,7 +212,7 @@ jobs:
       - uses: nasa/fprime-actions/coverage-update@devel
         with:
           modules-jsonl: ${{ steps.intcov.outputs.modules-jsonl }}
-          coverage-kind: integration
+          coverage-kind: ${{ steps.intcov.outputs.coverage-kind }}
 ```
 
 ## Bootstrapping

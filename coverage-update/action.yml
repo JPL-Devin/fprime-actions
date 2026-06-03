@@ -18,9 +18,11 @@ inputs:
     required: true
   coverage-kind:
     description: >
-      Coverage kind: 'ut' (unit test, default) or 'integration'.
-      Controls the subdirectory name used on the baseline branch
-      (coverage-ut/ or coverage-integration/).
+      Coverage kind slug (e.g. 'ut', 'integration-int',
+      'integration-hil-arm').  Controls the subdirectory name used
+      on the baseline branch (coverage-<kind>/).  For integration
+      coverage, pass the output of coverage-integration-common's
+      'coverage-kind' output.
     required: false
     default: "ut"
   baseline-branch-prefix:

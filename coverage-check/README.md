@@ -49,7 +49,7 @@ The caller must have:
   id: cov
   with:
     build-cache: build-fprime-automatic-native-coverage
-    suffix: int              # produces coverage-kind: integration-int
+    suffix: linux              # produces coverage-kind: integration-linux
 - uses: nasa/fprime-actions/coverage-check@devel
   with:
     modules-jsonl: ${{ steps.cov.outputs.modules-jsonl }}
@@ -92,7 +92,7 @@ posted by the companion `coverage-comment` workflow, which runs on
 |----------------------------|--------------------------------------|------------------------------------------------------------------------------------------------------|
 | `working-directory`        | `.`                                  | Directory the coverage outputs were produced in (should match `coverage-common`).                    |
 | `modules-jsonl`            | (required)                           | Path to the JSON-Lines file produced by `coverage-common` (`modules-jsonl` output).                  |
-| `coverage-kind`            | `ut`                                 | Coverage kind slug (e.g. `ut`, `integration-int`, `integration-hil-arm`). Controls baseline subdirectory and comment marker. |
+| `coverage-kind`            | `ut`                                 | Coverage kind slug (e.g. `ut`, `integration-linux`, `integration-hil-arm`). Controls baseline subdirectory and comment marker. |
 | `baseline-branch-prefix`   | `coverage`                           | Prefix applied to `<base_ref>` to form the baseline branch (`<prefix>/<base_ref>`).                  |
 | `regression-threshold`     | `0.5`                                | Percentage points of line-coverage drop tolerated per module.                                         |
 | `fail-on-regression`       | `false`                              | If `true`, the action exits non-zero when any module regresses beyond the threshold.                 |
@@ -146,7 +146,7 @@ jobs:
         id: intcov
         with:
           build-cache: build-fprime-automatic-native-coverage
-          suffix: int
+          suffix: linux
       - uses: nasa/fprime-actions/coverage-check@devel
         with:
           modules-jsonl: ${{ steps.intcov.outputs.modules-jsonl }}
@@ -154,7 +154,7 @@ jobs:
 ```
 
 Each coverage kind gets **separate comment and summary markers**, so
-multiple coverage types (UT, integration-int, integration-hil-arm) can
+multiple coverage types (UT, integration-linux, integration-hil-arm) can
 coexist on the same PR without colliding.
 
 ### Summary comment

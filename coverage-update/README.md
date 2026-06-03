@@ -40,7 +40,7 @@ The caller must have generated coverage with `coverage-common` or
   id: intcov
   with:
     build-cache: build-fprime-automatic-native-coverage
-    suffix: int
+    suffix: linux
 - uses: nasa/fprime-actions/coverage-update@devel
   with:
     modules-jsonl: ${{ steps.intcov.outputs.modules-jsonl }}
@@ -66,7 +66,7 @@ permissions:
 2. Fetches or creates the baseline branch as a worktree (orphan branch on
    first push).
 3. Mirrors the per-module + global outputs for the current `coverage-kind`
-   into the worktree (e.g. `coverage-ut/`, `coverage-integration-int/`).
+   into the worktree (e.g. `coverage-ut/`, `coverage-integration-linux/`).
    All other kinds' data is untouched.
 4. Regenerates the combined landing page (`index.html`) and machine-readable
    `catalog.json` — both dynamically reflect all coverage kinds present
@@ -81,7 +81,7 @@ Forks are skipped automatically (no push from forks).
 |--------------------------|--------------|------------------------------------------------------------------------------------------------------|
 | `working-directory`      | `.`          | Directory the coverage outputs were produced in (should match `coverage-common`).                     |
 | `modules-jsonl`          | (required)   | Path to the JSON-Lines file produced by `coverage-common` (`modules-jsonl` output).                  |
-| `coverage-kind`          | `ut`         | Coverage kind slug (e.g. `ut`, `integration-int`, `integration-hil-arm`). Controls the subdirectory name on the baseline branch (`coverage-<kind>/`). |
+| `coverage-kind`          | `ut`         | Coverage kind slug (e.g. `ut`, `integration-linux`, `integration-hil-arm`). Controls the subdirectory name on the baseline branch (`coverage-<kind>/`). |
 | `baseline-branch-prefix` | `coverage`   | Prefix applied to `<ref-name>` to form the baseline branch (`<prefix>/<ref-name>`).                  |
 | `ref`                    | `github.ref_name` | The git ref whose coverage is being recorded (e.g. `devel`).                                   |
 
@@ -95,7 +95,7 @@ Forks are skipped automatically (no push from forks).
 │   ├── summary.json
 │   ├── coverage-all.html
 │   └── coverage.*.html
-├── coverage-integration-int/        global integration (Linux int) run
+├── coverage-integration-linux/        global integration (Linux int) run
 │   ├── summary.json
 │   ├── coverage-all.html
 │   └── coverage.*.html
@@ -106,7 +106,7 @@ Forks are skipped automatically (no push from forks).
 │   │   ├── summary.json
 │   │   ├── index.html               gcovr report (renamed from coverage.html)
 │   │   └── coverage.*.html
-│   ├── coverage-integration-int/
+│   ├── coverage-integration-linux/
 │   │   ├── summary.json
 │   │   ├── index.html
 │   │   └── coverage.*.html
@@ -115,7 +115,7 @@ Forks are skipped automatically (no push from forks).
 ├── Drv/LinuxGpio/
 │   ├── coverage-ut/
 │   │   └── index.html               placeholder: "no coverage recorded"
-│   └── coverage-integration-int/
+│   └── coverage-integration-linux/
 │       └── index.html               placeholder
 └── ...
 ```
@@ -137,7 +137,7 @@ per-kind structure:
   "schema": 2,
   "overall": {
     "ut": { "line_pct": 98.0, ... },
-    "integration-int": { "line_pct": 42.1, ... },
+    "integration-linux": { "line_pct": 42.1, ... },
     "integration-hil-arm": { "line_pct": 38.5, ... }
   },
   "modules": [
@@ -145,7 +145,7 @@ per-kind structure:
       "path": "Svc/CmdDispatcher",
       "has_ut": true,
       "ut": { "has_coverage": true, "line_pct": 98.0, ... },
-      "integration-int": { "has_coverage": true, "line_pct": 45.2, ... },
+      "integration-linux": { "has_coverage": true, "line_pct": 45.2, ... },
       "integration-hil-arm": { "has_coverage": true, "line_pct": 41.0, ... }
     }
   ]

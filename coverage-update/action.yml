@@ -18,7 +18,7 @@ inputs:
     required: true
   coverage-kind:
     description: >
-      Coverage kind slug (e.g. 'ut', 'integration-int',
+      Coverage kind slug (e.g. 'ut', 'integration-linux',
       'integration-hil-arm').  Controls the subdirectory name used
       on the baseline branch (coverage-<kind>/).  For integration
       coverage, pass the output of coverage-integration-common's

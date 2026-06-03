@@ -80,7 +80,7 @@ test fixtures.
   propagate per-module failures as a non-zero exit.
 * `compare.py` &mdash; PR-side delta + sticky comment markdown (used by
   `coverage-check`). Accepts any `--coverage-kind` slug (e.g. `ut`,
-  `integration-int`, `integration-hil-arm`). Also produces a standalone
+  `integration-linux`, `integration-hil-arm`). Also produces a standalone
   summary comment (`--summary-output`) with absolute coverage numbers.
 * `mirror.py` &mdash; copies coverage outputs into the baseline worktree,
   renames `coverage.html` → `index.html` in each subdirectory, writes

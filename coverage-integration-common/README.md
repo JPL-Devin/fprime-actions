@@ -11,7 +11,7 @@ each component individually, matching the per-module structure that
 The outputs can be fed directly to
 [`coverage-check`](../coverage-check/) (PR) or
 [`coverage-update`](../coverage-update/) (push) using the
-`coverage-kind` output (e.g. `integration-int`, `integration-hil-arm`).
+`coverage-kind` output (e.g. `integration-linux`, `integration-hil-arm`).
 
 ## Prerequisites
 
@@ -67,7 +67,7 @@ action).
 | `working-directory` | `.`     | Top-level project root (contains `CMakeLists.txt`, `Fw/`, `Svc/`).                   |
 | `build-cache`       | (required) | Path to the CMake build cache with `.gcno` / `.gcda` files. **Always required** — the action does not auto-detect. |
 | `strict`            | `false` | When `true`, fail the action if any per-module gcovr invocation fails.                |
-| `suffix`            | `int`   | Platform/variant suffix appended to the coverage kind slug. E.g. `int` → `integration-int`, `hil-arm` → `integration-hil-arm`. |
+| `suffix`            | `linux` | Platform/variant suffix appended to the coverage kind slug. E.g. `linux` → `integration-linux`, `hil-arm` → `integration-hil-arm`. |
 | `debug`             | `false` | When `true`, pass `-v` to gcovr for verbose output.                                   |
 
 ## Outputs
@@ -75,7 +75,7 @@ action).
 | Output          | Description                                                       |
 |-----------------|-------------------------------------------------------------------|
 | `modules-jsonl` | Absolute path to the JSON-Lines file listing discovered modules.  |
-| `coverage-kind` | Resolved coverage kind slug (e.g. `integration-int`, `integration-hil-arm`). Pass to `coverage-check`/`coverage-update`. |
+| `coverage-kind` | Resolved coverage kind slug (e.g. `integration-linux`, `integration-hil-arm`). Pass to `coverage-check`/`coverage-update`. |
 
 ## Usage
 
@@ -121,26 +121,26 @@ steps:
     id: intcov
     with:
       build-cache: build-fprime-automatic-native-coverage
-      suffix: int
+      suffix: linux
   - uses: nasa/fprime-actions/coverage-check@devel
     with:
       modules-jsonl: ${{ steps.intcov.outputs.modules-jsonl }}
       coverage-kind: ${{ steps.intcov.outputs.coverage-kind }}
 ```
 
-### Multiple platforms (Linux int + HIL ARM)
+### Multiple platforms (Linux + HIL ARM)
 
 ```yaml
   # Job 1: Linux integration
   - uses: nasa/fprime-actions/coverage-integration-common@devel
-    id: int
+    id: linux
     with:
       build-cache: build-fprime-automatic-native-coverage
-      suffix: int
+      suffix: linux
   - uses: nasa/fprime-actions/coverage-update@devel
     with:
-      modules-jsonl: ${{ steps.int.outputs.modules-jsonl }}
-      coverage-kind: ${{ steps.int.outputs.coverage-kind }}
+      modules-jsonl: ${{ steps.linux.outputs.modules-jsonl }}
+      coverage-kind: ${{ steps.linux.outputs.coverage-kind }}
 
   # Job 2: HIL ARM integration
   - uses: nasa/fprime-actions/coverage-integration-common@devel

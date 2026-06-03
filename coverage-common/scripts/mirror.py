@@ -173,7 +173,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--coverage-kind",
         default="ut",
-        help="Coverage kind slug (e.g. 'ut', 'integration-int', 'integration-hil-arm')",
+        help="Coverage kind slug (e.g. 'ut', 'integration-linux', 'integration-hil-arm')",
     )
     parser.add_argument("--ref", required=True)
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))

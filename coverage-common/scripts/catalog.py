@@ -2,7 +2,7 @@
 
 The catalog reads from the baseline worktree (``--dest``), dynamically
 scanning all ``coverage-*`` subdirectories for each module (e.g.
-``coverage-ut/``, ``coverage-integration-int/``,
+``coverage-ut/``, ``coverage-integration-linux/``,
 ``coverage-integration-hil-arm/``).  The resulting landing page shows one
 row per module per coverage kind so reviewers can see everything at a
 glance.
@@ -42,7 +42,7 @@ def _kind_label(kind: str) -> str:
     """Human-readable label for a coverage kind slug."""
     if kind == "ut":
         return "unit test"
-    # e.g. "integration-int" -> "integration (int)"
+    # e.g. "integration-linux" -> "integration (int)"
     if kind.startswith("integration-"):
         suffix = kind[len("integration-"):]
         return f"integration ({suffix})"

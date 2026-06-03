@@ -40,13 +40,13 @@ inputs:
   suffix:
     description: >
       Platform/variant suffix appended to the coverage kind slug.
-      For example 'int' produces coverage-kind 'integration-int' and
-      subdirectory 'coverage-integration-int/'.  Use 'hil-arm' for
+      For example 'linux' produces coverage-kind 'integration-linux' and
+      subdirectory 'coverage-integration-linux/'.  Use 'hil-arm' for
       hardware-in-the-loop ARM, etc.  The calling workflow supplies
       this to differentiate multiple integration coverage runs on the
       same baseline branch.
     required: false
-    default: "int"
+    default: "linux"
   debug:
     description: >
       When 'true', pass -v to gcovr for verbose output.  Useful for
@@ -58,7 +58,7 @@ outputs:
     description: "Path to the JSON-Lines file listing discovered modules"
     value: ${{ steps.discover.outputs.modules-jsonl }}
   coverage-kind:
-    description: "Resolved coverage kind slug (e.g. 'integration-int', 'integration-hil-arm')"
+    description: "Resolved coverage kind slug (e.g. 'integration-linux', 'integration-hil-arm')"
     value: ${{ steps.kind.outputs.coverage-kind }}
 
 runs:

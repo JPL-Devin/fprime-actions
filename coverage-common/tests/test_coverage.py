@@ -87,11 +87,41 @@ def test_discover_finds_modules_and_ut_flag():
         assert not any(p.startswith("Decoy") for p, _ in result), result
 
 
+def test_discover_finds_library_modules():
+    """register_fprime_library() should be discovered alongside register_fprime_module()."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _make_module(root, "Svc/CmdDispatcher", with_ut=True)  # uses register_fprime_module
+        # Library-style module (like Svc/Ccsds/TmFramer)
+        lib_dir = root / "Svc" / "Ccsds" / "TmFramer"
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        (lib_dir / "CMakeLists.txt").write_text(
+            "register_fprime_library(\n  SOURCES TmFramer.cpp\n)\n"
+            "register_fprime_ut(\n  SOURCES test.cpp\n)\n",
+            encoding="utf-8",
+        )
+        # Library without UTs
+        lib_no_ut = root / "Svc" / "Ccsds" / "Types"
+        lib_no_ut.mkdir(parents=True, exist_ok=True)
+        (lib_no_ut / "CMakeLists.txt").write_text(
+            "register_fprime_library(\n  SOURCES Types.cpp\n)\n",
+            encoding="utf-8",
+        )
+
+        result = sorted(discover.discover(root))
+        assert ("Svc/CmdDispatcher", True) in result, result
+        assert ("Svc/Ccsds/TmFramer", True) in result, result
+        assert ("Svc/Ccsds/Types", False) in result, result
+
+
 def test_discover_ignores_commented_out_calls():
     # Regression test for the regex: lines starting with `#` must not match.
     text = "# register_fprime_module()\n  register_fprime_ut()"
     assert not discover.MODULE_RE.search(text)
     assert discover.UT_RE.search(text)
+    # Also check commented-out library calls
+    text2 = "# register_fprime_library()\n  register_fprime_ut()"
+    assert not discover.MODULE_RE.search(text2)
 
 
 def test_summary_load_handles_missing_file_and_zero_total():
@@ -573,6 +603,7 @@ def test_compare_baseline_missing_reports_no_baseline():
 
 TESTS = [
     test_discover_finds_modules_and_ut_flag,
+    test_discover_finds_library_modules,
     test_discover_ignores_commented_out_calls,
     test_summary_load_handles_missing_file_and_zero_total,
     test_summary_load_parses_gcovr_json,

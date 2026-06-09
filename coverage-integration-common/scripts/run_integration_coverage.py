@@ -30,6 +30,7 @@ def _run_gcovr(
     output_dir: Path,
     output_prefix: str,
     filter_dir: Path | None = None,
+    enable_fw_assert_branch_coverage: bool = False,
     debug: bool = False,
 ) -> bool:
     """Run gcovr once, writing HTML + JSON summary to output_dir.
@@ -45,7 +46,11 @@ def _run_gcovr(
         "--html-details", str(output_dir / f"{output_prefix}.html"),
         "--json-summary", str(output_dir / "summary.json"),
         "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+        "--exclude-throw-branches",
+        "--exclude-unreachable-branches",
     ]
+    if not enable_fw_assert_branch_coverage:
+        cmd.extend(["--exclude-branches-by-pattern", r".*FW_ASSERT\(.*"])
     if filter_dir is not None:
         cmd.extend(["--filter", str(filter_dir)])
     if debug:
@@ -74,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail immediately if any per-module gcovr invocation fails",
     )
     parser.add_argument(
+        "--enable-fw-assert-branch-coverage", action="store_true",
+        help="Include FW_ASSERT branches in branch coverage (excluded by default)",
+    )
+    parser.add_argument(
         "--debug", action="store_true",
         help="Pass -v to gcovr for verbose output",
     )
@@ -96,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         build_cache=build_cache,
         output_dir=project_root / "coverage",
         output_prefix="coverage-all",
+        enable_fw_assert_branch_coverage=args.enable_fw_assert_branch_coverage,
         debug=args.debug,
     )
     if not global_ok:
@@ -119,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=mod_dir / "coverage",
             output_prefix="coverage",
             filter_dir=mod_dir,
+            enable_fw_assert_branch_coverage=args.enable_fw_assert_branch_coverage,
             debug=args.debug,
         )
         if not ok:

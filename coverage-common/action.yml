@@ -26,6 +26,14 @@ inputs:
       without failing the whole CI job.
     required: false
     default: "false"
+  enable-fw-assert-branch-coverage:
+    description: >
+      When 'true', include FW_ASSERT branches in branch coverage.
+      By default FW_ASSERT branches are excluded because each
+      FW_ASSERT(cond) expands to a ternary whose error path is
+      virtually never tested, inflating uncovered-branch counts.
+    required: false
+    default: "false"
   debug:
     description: >
       When 'true', forward gcovr's verbose output (-v) for the global and
@@ -74,9 +82,16 @@ runs:
         # overflow (gcc#68080) defensively.  With gcov-12+ it should
         # never fire, but it's cheap insurance against future toolchain
         # regressions.
+        FW_ASSERT_FLAGS="--exclude-branches-by-pattern .*FW_ASSERT\\(.*"
+        if [ "${{ inputs.enable-fw-assert-branch-coverage }}" = "true" ]; then
+          FW_ASSERT_FLAGS=""
+        fi
         fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
           --pass-through --json-summary coverage/summary.json \
           --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+          --exclude-throw-branches \
+          --exclude-unreachable-branches \
+          ${FW_ASSERT_FLAGS} \
           ${VERBOSE_FLAG}
 
     - name: "Per-module coverage"
@@ -87,11 +102,16 @@ runs:
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
         STRICT: ${{ inputs.strict }}
+        ENABLE_FW_ASSERT: ${{ inputs.enable-fw-assert-branch-coverage }}
         DEBUG: ${{ inputs.debug }}
       run: |
         STRICT_FLAG=""
         if [ "${STRICT}" = "true" ]; then
           STRICT_FLAG="--strict"
+        fi
+        FW_ASSERT_FLAG=""
+        if [ "${ENABLE_FW_ASSERT}" = "true" ]; then
+          FW_ASSERT_FLAG="--enable-fw-assert-branch-coverage"
         fi
         DEBUG_FLAG=""
         if [ "${DEBUG}" = "true" ]; then
@@ -102,4 +122,5 @@ runs:
           --modules-jsonl "$MODULES_JSONL" \
           --target-platform "${TARGET_PLATFORM}" \
           ${STRICT_FLAG} \
+          ${FW_ASSERT_FLAG} \
           ${DEBUG_FLAG}

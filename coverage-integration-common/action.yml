@@ -47,6 +47,14 @@ inputs:
       same baseline branch.
     required: false
     default: "linux"
+  enable-fw-assert-branch-coverage:
+    description: >
+      When 'true', include FW_ASSERT branches in branch coverage.
+      By default FW_ASSERT branches are excluded because each
+      FW_ASSERT(cond) expands to a ternary whose error path is
+      virtually never tested, inflating uncovered-branch counts.
+    required: false
+    default: "false"
   debug:
     description: >
       When 'true', pass -v to gcovr for verbose output.  Useful for
@@ -95,11 +103,16 @@ runs:
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
         BUILD_CACHE: ${{ inputs.build-cache }}
         STRICT: ${{ inputs.strict }}
+        ENABLE_FW_ASSERT: ${{ inputs.enable-fw-assert-branch-coverage }}
         DEBUG: ${{ inputs.debug }}
       run: |
         STRICT_FLAG=""
         if [ "${STRICT}" = "true" ]; then
           STRICT_FLAG="--strict"
+        fi
+        FW_ASSERT_FLAG=""
+        if [ "${ENABLE_FW_ASSERT}" = "true" ]; then
+          FW_ASSERT_FLAG="--enable-fw-assert-branch-coverage"
         fi
         DEBUG_FLAG=""
         if [ "${DEBUG}" = "true" ]; then
@@ -110,4 +123,5 @@ runs:
           --build-cache "$BUILD_CACHE" \
           --modules-jsonl "$MODULES_JSONL" \
           ${STRICT_FLAG} \
+          ${FW_ASSERT_FLAG} \
           ${DEBUG_FLAG}

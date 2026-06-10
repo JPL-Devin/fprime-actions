@@ -1,0 +1,106 @@
+name: "F´ Coverage — Integration Aggregate"
+description: >
+  Merge multiple per-deployment gcovr JSON tracefiles into unified
+  per-module coverage reports.  Designed to run after a matrix of
+  coverage-integration-collect jobs, with all tracefile artifacts
+  downloaded into a single directory.
+
+  Produces summary.json + HTML reports per-module in the same layout
+  as coverage-integration-common, so the output can be fed directly
+  to coverage-update.
+inputs:
+  working-directory:
+    description: >
+      The fprime source root (same path used as working-directory in
+      the collect step).  Must contain Fw/, Svc/, Os/, etc.
+    required: false
+    default: "."
+  tracefile-pattern:
+    description: >
+      Glob pattern matching the downloaded gcovr JSON tracefiles.
+      Example: 'traces/integration-trace-*.json'
+    required: true
+  suffix:
+    description: >
+      Platform/variant suffix for the coverage-kind slug.
+      Default 'linux' → kind 'integration-linux'.
+    required: false
+    default: "linux"
+  strict:
+    description: "When 'true', fail if any per-module gcovr merge fails."
+    required: false
+    default: "false"
+  enable-fw-assert-branch-coverage:
+    description: >
+      When 'true', include FW_ASSERT branches in branch coverage.
+      By default excluded.
+    required: false
+    default: "false"
+  debug:
+    description: "When 'true', pass -v to gcovr."
+    required: false
+    default: "false"
+outputs:
+  modules-jsonl:
+    description: "Path to the JSON-Lines file listing discovered modules"
+    value: ${{ steps.discover.outputs.modules-jsonl }}
+  coverage-kind:
+    description: "Resolved coverage kind slug (e.g. 'integration-linux')"
+    value: ${{ steps.kind.outputs.coverage-kind }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Discover modules"
+      id: discover
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+      run: |
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > modules.jsonl
+        echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
+        echo "Discovered $(wc -l < modules.jsonl) modules"
+
+    - name: "Resolve coverage kind"
+      id: kind
+      shell: bash
+      env:
+        SUFFIX: ${{ inputs.suffix }}
+      run: |
+        if [ -n "$SUFFIX" ]; then
+          echo "coverage-kind=integration-${SUFFIX}" >> "$GITHUB_OUTPUT"
+        else
+          echo "coverage-kind=integration" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: "Aggregate integration coverage"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        TRACEFILE_PATTERN: ${{ inputs.tracefile-pattern }}
+        STRICT: ${{ inputs.strict }}
+        ENABLE_FW_ASSERT: ${{ inputs.enable-fw-assert-branch-coverage }}
+        DEBUG: ${{ inputs.debug }}
+      run: |
+        STRICT_FLAG=""
+        if [ "${STRICT}" = "true" ]; then
+          STRICT_FLAG="--strict"
+        fi
+        FW_ASSERT_FLAG=""
+        if [ "${ENABLE_FW_ASSERT}" = "true" ]; then
+          FW_ASSERT_FLAG="--enable-fw-assert-branch-coverage"
+        fi
+        DEBUG_FLAG=""
+        if [ "${DEBUG}" = "true" ]; then
+          DEBUG_FLAG="--debug"
+        fi
+        python3 "${ACTION_PATH}/scripts/aggregate_coverage.py" \
+          --project-root . \
+          --tracefiles "${TRACEFILE_PATTERN}" \
+          --modules-jsonl "$MODULES_JSONL" \
+          ${STRICT_FLAG} \
+          ${FW_ASSERT_FLAG} \
+          ${DEBUG_FLAG}

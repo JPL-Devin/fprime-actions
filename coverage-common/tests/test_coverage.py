@@ -319,7 +319,9 @@ def test_compare_flags_regression_and_new_module():
         assert "-8.33" in body  # function delta: mid(85.0) - high(93.33)
         assert "Svc/Foo" in body
         assert "#### New modules" in body
-        assert "#### Modules without UTs" in body
+        assert "Modules without UTs" in body
+        assert "<details>" in body
+        assert "<summary>" in body
         assert "Drv/LinuxGpio" in body
         regression_list = json.loads(regs.read_text(encoding="utf-8"))
         paths = {r["path"] for r in regression_list}

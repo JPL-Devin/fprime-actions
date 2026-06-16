@@ -9,10 +9,6 @@ inputs:
     description: "Default branch to use if no PR branch found"
     required: false
     default: "devel"
-  github-token:
-    description: "GitHub token used to authenticate branch lookups. Optional."
-    required: false
-    default: ""
 
 outputs:
   target-branch:
@@ -28,7 +24,6 @@ runs:
       with:
         target_repository: ${{ inputs.repository }}
         default_target_ref: ${{ inputs.default-branch }}
-        github-token: ${{ inputs.github-token }}
 
     - name: "Upgrade package"
       shell: bash

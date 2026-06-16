@@ -9,7 +9,7 @@ inputs:
     required: false
     default: "devel"
   github-token:
-    description: "Optional GitHub token used to authenticate API calls (prevents rate limiting)"
+    description: "Token used to authenticate GitHub API calls and avoid rate limits. Defaults to the automatic github.token; override only when cross-repository access requires a different token."
     required: false
     default: ""
 outputs:
@@ -26,7 +26,7 @@ runs:
         DEFAULT_TARGET_REF: ${{ inputs.default_target_ref }}
         EVENT_NAME: ${{ github.event_name }}
         PR_NUMBER: ${{ github.event.number }}
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.github-token || github.token }}
       run: |
         BRANCH_NAME="${GITHUB_REF#refs/heads/}"
         echo "Looking for 'pr-${PR_NUMBER}'/'${BRANCH_NAME}'"

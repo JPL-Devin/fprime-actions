@@ -10,4 +10,4 @@ Will return a target branch in the following priority:
 - If the name of the branch the PR is trying to merge into has a matching branch name on target_repo, then return that branch name. (this is useful for example for release/ branches, to have a tracking release branch on the her repo)
 - Otherwise, return default_target_ref.
 
-The `github-token` input is optional but allows not hitting GitHub API rate limits, which would fail to install the PR branch when it exists
+API calls are authenticated using the automatic `github.token` by default, which avoids the low unauthenticated GitHub API rate limit (60 requests/hour per runner IP) that can otherwise cause the lookup to silently fall back to the default branch. The optional `github-token` input only needs to be set to override this default (e.g. when cross-repository access requires a different token).

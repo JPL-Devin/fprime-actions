@@ -1,0 +1,24 @@
+name: "F´ Soak Deploy"
+description: "Install a built F´ deployment on a target platform in preparation for soak testing."
+inputs:
+  platform:
+    description: "Platform (e.g. 'linux'). Selects scripts/deploy_<platform>.sh."
+    required: true
+  gds-args:
+    description: "Extra arguments appended to fprime-gds (e.g. '--framing-selection fprime-framing')."
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: "Soak setup"
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: ${{ github.action_path }}/scripts/setup.sh
+    - name: "Soak deploy (${{ inputs.platform }})"
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        GDS_ARGS: ${{ inputs.gds-args }}
+      run: ${{ github.action_path }}/scripts/deploy_${{ inputs.platform }}.sh

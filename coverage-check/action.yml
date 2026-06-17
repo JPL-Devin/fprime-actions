@@ -11,8 +11,9 @@ description: >
   GitHub strips write permissions from GITHUB_TOKEN on fork-triggered
   pull_request events.
 
-  Call the coverage-common action first to produce the coverage outputs
-  and pass its 'modules-jsonl' output into this action.
+  Call the coverage-common (or coverage-integration-common) action first
+  to produce the coverage outputs and pass its 'modules-jsonl' output
+  into this action.
 inputs:
   working-directory:
     description: "Directory the coverage outputs were produced in (should match coverage-common)"
@@ -21,16 +22,17 @@ inputs:
   modules-jsonl:
     description: "Path to the JSON-Lines file produced by coverage-common (modules-jsonl output)"
     required: true
+  coverage-kind:
+    description: >
+      Coverage kind slug (e.g. 'ut', 'integration-linux',
+      'integration-hil-arm').  Controls the baseline subdirectory
+      used for comparison (coverage-<kind>/).  For integration
+      coverage, pass the output of coverage-integration-common's
+      'coverage-kind' output.
+    required: false
+    default: "ut"
   baseline-branch-prefix:
     description: "Prefix applied to <base-ref> to form the baseline branch name"
-    required: false
-    default: "coverage"
-  coverage-subdirectory:
-    description: >
-      Subdirectory under each module in the baseline branch holding coverage
-      artifacts (summary.json, index.html, coverage.*.html).  Set to "" to
-      flatten so paths become <module>/index.html instead of
-      <module>/coverage/index.html.
     required: false
     default: "coverage"
   regression-threshold:
@@ -44,7 +46,7 @@ inputs:
   comment-marker:
     description: "Hidden HTML marker used to find and edit the sticky PR comment"
     required: false
-    default: "<!-- fprime-coverage-comment -->"
+    default: ""
   artifact-name:
     description: >
       Name of the workflow artifact to upload.  The companion
@@ -52,7 +54,7 @@ inputs:
       'artifact-name' input so it can locate the artifact on the
       triggering workflow run.
     required: false
-    default: "fprime-coverage-comment"
+    default: ""
   artifact-retention-days:
     description: "Days to retain the uploaded artifact (max 90)."
     required: false
@@ -69,6 +71,28 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: "Resolve defaults from coverage-kind"
+      id: defaults
+      shell: bash
+      env:
+        COVERAGE_KIND: ${{ inputs.coverage-kind }}
+        MARKER_INPUT: ${{ inputs.comment-marker }}
+        ARTIFACT_INPUT: ${{ inputs.artifact-name }}
+      run: |
+        if [ -z "$MARKER_INPUT" ]; then
+          echo "marker=<!-- fprime-${COVERAGE_KIND}-coverage-comment -->" >> "$GITHUB_OUTPUT"
+        else
+          echo "marker=$MARKER_INPUT" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -z "$ARTIFACT_INPUT" ]; then
+          echo "artifact=fprime-${COVERAGE_KIND}-coverage-comment" >> "$GITHUB_OUTPUT"
+        else
+          echo "artifact=$ARTIFACT_INPUT" >> "$GITHUB_OUTPUT"
+        fi
+        # Summary artifact/marker are always derived
+        echo "summary-marker=<!-- fprime-${COVERAGE_KIND}-coverage-summary-comment -->" >> "$GITHUB_OUTPUT"
+        echo "summary-artifact=fprime-${COVERAGE_KIND}-coverage-summary" >> "$GITHUB_OUTPUT"
+
     - name: "Fetch baseline branch"
       id: baseline
       working-directory: ${{ inputs.working-directory }}
@@ -101,8 +125,8 @@ runs:
         BASELINE_MISSING: ${{ steps.baseline.outputs.baseline-missing }}
         BASE_REF: ${{ github.base_ref }}
         THRESHOLD: ${{ inputs.regression-threshold }}
-        SUBDIR: ${{ inputs.coverage-subdirectory }}
-        MARKER: ${{ inputs.comment-marker }}
+        COVERAGE_KIND: ${{ inputs.coverage-kind }}
+        MARKER: ${{ steps.defaults.outputs.marker }}
         FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
         MODULES_JSONL: ${{ inputs.modules-jsonl }}
       run: |
@@ -118,19 +142,22 @@ runs:
         if [ "$BASELINE_MISSING" = "true" ]; then
           MISSING_FLAG="--baseline-missing"
         fi
+        SUMMARY_PATH="$OUT_DIR/summary.md"
         python3 "${COMMON_PATH}/scripts/compare.py" \
           --source . \
           --baseline "$BASELINE_DIR" \
           --modules-jsonl "$MODULES_JSONL" \
-          --coverage-subdirectory "$SUBDIR" \
+          --coverage-kind "$COVERAGE_KIND" \
           --base-ref "$BASE_REF" \
           --threshold "$THRESHOLD" \
           --comment-marker "$MARKER" \
           --output "$COMMENT_PATH" \
+          --summary-output "$SUMMARY_PATH" \
           --regressions-output "$REGRESSIONS_PATH" \
           $FAIL_FLAG $MISSING_FLAG
         echo "comment-path=$COMMENT_PATH" >> "$GITHUB_OUTPUT"
         echo "regressions-json-path=$REGRESSIONS_PATH" >> "$GITHUB_OUTPUT"
+        echo "summary-path=$SUMMARY_PATH" >> "$GITHUB_OUTPUT"
 
     - name: "Stage comment artifact"
       id: stage
@@ -139,7 +166,7 @@ runs:
       env:
         COMMENT_PATH: ${{ steps.compare.outputs.comment-path }}
         REGRESSIONS_PATH: ${{ steps.compare.outputs.regressions-json-path }}
-        MARKER: ${{ inputs.comment-marker }}
+        MARKER: ${{ steps.defaults.outputs.marker }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         ARTIFACT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-artifact"
@@ -149,10 +176,6 @@ runs:
         if [ -f "$REGRESSIONS_PATH" ]; then
           cp "$REGRESSIONS_PATH" "$ARTIFACT_DIR/regressions.json"
         fi
-        # PR number and marker are written so the workflow_run side can
-        # locate the PR + identify the sticky comment without needing
-        # access to the pull_request event payload (which is unavailable
-        # to workflow_run-triggered jobs).
         if [ -z "$PR_NUMBER" ]; then
           echo "::error::No pull request number available; this action only supports pull_request events."
           exit 1
@@ -165,15 +188,37 @@ runs:
       if: steps.stage.outputs.artifact-dir != ''
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.artifact-name }}
+        name: ${{ steps.defaults.outputs.artifact }}
         path: ${{ steps.stage.outputs.artifact-dir }}
         if-no-files-found: error
         retention-days: ${{ inputs.artifact-retention-days }}
-        # Replace any prior artifact from an earlier attempt on the
-        # same workflow run, so re-running the Coverage Check job
-        # ("Re-run failed jobs") does not 422 on the duplicate name.
-        # actions/upload-artifact@v4 is strict about unique names per
-        # run; this preserves the v3 "upsert" feel.
+        overwrite: true
+
+    - name: "Stage summary artifact"
+      id: stage-summary
+      if: steps.compare.outputs.summary-path != ''
+      shell: bash
+      env:
+        SUMMARY_PATH: ${{ steps.compare.outputs.summary-path }}
+        SUMMARY_MARKER: ${{ steps.defaults.outputs.summary-marker }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        ARTIFACT_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-summary-artifact"
+        rm -rf "$ARTIFACT_DIR"
+        mkdir -p "$ARTIFACT_DIR"
+        cp "$SUMMARY_PATH" "$ARTIFACT_DIR/comment.md"
+        echo "$PR_NUMBER" > "$ARTIFACT_DIR/pr-number.txt"
+        echo "$SUMMARY_MARKER" > "$ARTIFACT_DIR/comment-marker.txt"
+        echo "artifact-dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+
+    - name: "Upload summary artifact"
+      if: steps.stage-summary.outputs.artifact-dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.defaults.outputs.summary-artifact }}
+        path: ${{ steps.stage-summary.outputs.artifact-dir }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.artifact-retention-days }}
         overwrite: true
 
     - name: "Write comment to step summary"
@@ -182,9 +227,6 @@ runs:
       env:
         COMMENT_PATH: ${{ steps.compare.outputs.comment-path }}
       run: |
-        # Make the comment body discoverable on the Actions run page in
-        # case the workflow_run side can't post (e.g. workflow not yet
-        # on default branch, or run is on a non-default base ref).
         echo "## Coverage report (preview)" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
         cat "$COMMENT_PATH" >> "$GITHUB_STEP_SUMMARY"

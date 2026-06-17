@@ -25,7 +25,13 @@ import sys
 from pathlib import Path
 
 
-def _run_module(mod: str, root: Path, target_platform: str, debug: bool) -> bool:
+def _run_module(
+    mod: str,
+    root: Path,
+    target_platform: str,
+    enable_fw_assert_branch_coverage: bool,
+    debug: bool,
+) -> bool:
     """Run coverage for a single module.  Returns True on success."""
     mod_dir = root / mod
     cmd = ["fprime-util", "check", "--coverage"]
@@ -38,7 +44,11 @@ def _run_module(mod: str, root: Path, target_platform: str, debug: bool) -> bool
         # crash gcovr by default.  gcc-12+ doesn't trigger this, but the
         # flag costs nothing and protects against future regressions.
         "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+        "--exclude-throw-branches",
+        "--exclude-unreachable-branches",
     ])
+    if not enable_fw_assert_branch_coverage:
+        cmd.extend(["--exclude-branches-by-pattern", r".*FW_ASSERT\(.*"])
     if debug:
         cmd.append("-v")
 
@@ -47,10 +57,6 @@ def _run_module(mod: str, root: Path, target_platform: str, debug: bool) -> bool
     if result.returncode != 0:
         print(f"[FAIL] {mod} (exit {result.returncode})", file=sys.stderr, flush=True)
         return False
-
-    html = mod_dir / "coverage" / "coverage.html"
-    if html.is_file():
-        html.rename(mod_dir / "coverage" / "index.html")
     return True
 
 
@@ -64,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Target platform forwarded to fprime-util")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero if any module failed (default: lenient, exit 0)")
+    parser.add_argument("--enable-fw-assert-branch-coverage", action="store_true",
+                        help="Include FW_ASSERT branches in branch coverage (excluded by default)")
     parser.add_argument("--debug", action="store_true",
                         help="Forward gcovr's verbose output (-v) for each module")
     args = parser.parse_args(argv)
@@ -83,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[skip] {mod} (no register_fprime_ut)")
             skipped += 1
             continue
-        if not _run_module(mod, root, args.target_platform, args.debug):
+        if not _run_module(mod, root, args.target_platform, args.enable_fw_assert_branch_coverage, args.debug):
             failed += 1
         else:
             covered += 1

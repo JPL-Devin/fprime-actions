@@ -87,11 +87,41 @@ def test_discover_finds_modules_and_ut_flag():
         assert not any(p.startswith("Decoy") for p, _ in result), result
 
 
+def test_discover_finds_library_modules():
+    """register_fprime_library() should be discovered alongside register_fprime_module()."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _make_module(root, "Svc/CmdDispatcher", with_ut=True)  # uses register_fprime_module
+        # Library-style module (like Svc/Ccsds/TmFramer)
+        lib_dir = root / "Svc" / "Ccsds" / "TmFramer"
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        (lib_dir / "CMakeLists.txt").write_text(
+            "register_fprime_library(\n  SOURCES TmFramer.cpp\n)\n"
+            "register_fprime_ut(\n  SOURCES test.cpp\n)\n",
+            encoding="utf-8",
+        )
+        # Library without UTs
+        lib_no_ut = root / "Svc" / "Ccsds" / "Types"
+        lib_no_ut.mkdir(parents=True, exist_ok=True)
+        (lib_no_ut / "CMakeLists.txt").write_text(
+            "register_fprime_library(\n  SOURCES Types.cpp\n)\n",
+            encoding="utf-8",
+        )
+
+        result = sorted(discover.discover(root))
+        assert ("Svc/CmdDispatcher", True) in result, result
+        assert ("Svc/Ccsds/TmFramer", True) in result, result
+        assert ("Svc/Ccsds/Types", False) in result, result
+
+
 def test_discover_ignores_commented_out_calls():
     # Regression test for the regex: lines starting with `#` must not match.
     text = "# register_fprime_module()\n  register_fprime_ut()"
     assert not discover.MODULE_RE.search(text)
     assert discover.UT_RE.search(text)
+    # Also check commented-out library calls
+    text2 = "# register_fprime_library()\n  register_fprime_ut()"
+    assert not discover.MODULE_RE.search(text2)
 
 
 def test_summary_load_handles_missing_file_and_zero_total():
@@ -115,7 +145,8 @@ def test_summary_load_parses_gcovr_json():
     assert s.branch.percent == 87.5
 
 
-def test_mirror_module_renames_html_when_coverage_present():
+def test_mirror_module_renames_coverage_html_to_index():
+    """coverage.html IS renamed to index.html (each kind has its own subdir)."""
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
         dest = Path(tmp) / "dest"
@@ -125,13 +156,14 @@ def test_mirror_module_renames_html_when_coverage_present():
         _place_coverage(_make_module(source, mod_path), "summary_high.json")
 
         has_cov = mirror.mirror_module(
-            source=source, dest=dest, module_path=mod_path, has_ut=True, subdir="coverage"
+            source=source, dest=dest, module_path=mod_path, has_ut=True,
+            subdir="coverage-ut", kind="ut",
         )
         assert has_cov is True
-        dst_cov = dest / mod_path / "coverage"
+        dst_cov = dest / mod_path / "coverage-ut"
         assert (dst_cov / "summary.json").is_file()
         assert (dst_cov / "index.html").is_file(), "coverage.html should be renamed to index.html"
-        assert not (dst_cov / "coverage.html").exists(), "old coverage.html must be removed"
+        assert not (dst_cov / "coverage.html").exists(), "coverage.html should NOT exist after rename"
         assert (dst_cov / "coverage.123.html").is_file(), "sibling detail file must be preserved"
 
 
@@ -145,10 +177,11 @@ def test_mirror_module_writes_placeholder_when_no_ut():
         _make_module(source, mod_path, with_ut=False)
 
         has_cov = mirror.mirror_module(
-            source=source, dest=dest, module_path=mod_path, has_ut=False, subdir="coverage"
+            source=source, dest=dest, module_path=mod_path, has_ut=False,
+            subdir="coverage-ut", kind="ut",
         )
         assert has_cov is False
-        placeholder = dest / mod_path / "coverage" / "index.html"
+        placeholder = dest / mod_path / "coverage-ut" / "index.html"
         assert placeholder.is_file()
         body = placeholder.read_text(encoding="utf-8")
         assert "No coverage recorded" in body
@@ -157,31 +190,34 @@ def test_mirror_module_writes_placeholder_when_no_ut():
         assert 'href="../../../index.html"' in body, body
 
 
-def test_catalog_relative_path_math():
-    # Sanity-check the back-link depth calculation for various inputs.
-    assert mirror._catalog_relative_path("Drv/LinuxGpio", "coverage") == "../../../index.html"
-    assert mirror._catalog_relative_path("Drv/LinuxGpio", "") == "../../index.html"
-    assert mirror._catalog_relative_path("Fw/Cmd/Sub", "coverage") == "../../../../index.html"
-    assert mirror._catalog_relative_path("TopLevel", "coverage") == "../../index.html"
-    assert mirror._catalog_relative_path("TopLevel", "") == "../index.html"
-
-
-def test_mirror_flatten_drops_coverage_subdir():
+def test_mirror_integration_placeholder():
+    """Integration coverage placeholder uses different text."""
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
         dest = Path(tmp) / "dest"
         source.mkdir()
         dest.mkdir()
-        mod_path = "Svc/CmdDispatcher"
-        _place_coverage(_make_module(source, mod_path), "summary_high.json")
+        mod_path = "Svc/Health"
+        _make_module(source, mod_path, with_ut=True)
 
-        mirror.mirror_module(
-            source=source, dest=dest, module_path=mod_path, has_ut=True, subdir=""
+        has_cov = mirror.mirror_module(
+            source=source, dest=dest, module_path=mod_path, has_ut=True,
+            subdir="coverage-integration-linux", kind="integration-linux",
         )
-        # With subdir="", artifacts land directly under the module dir.
-        assert (dest / mod_path / "summary.json").is_file()
-        assert (dest / mod_path / "index.html").is_file()
-        assert not (dest / mod_path / "coverage").exists()
+        assert has_cov is False
+        placeholder = dest / mod_path / "coverage-integration-linux" / "index.html"
+        assert placeholder.is_file()
+        body = placeholder.read_text(encoding="utf-8")
+        assert "integration test coverage" in body.lower()
+
+
+def test_catalog_relative_path_math():
+    # Sanity-check the back-link depth calculation for various inputs.
+    assert mirror._catalog_relative_path("Drv/LinuxGpio", "coverage-ut") == "../../../index.html"
+    assert mirror._catalog_relative_path("Drv/LinuxGpio", "") == "../../index.html"
+    assert mirror._catalog_relative_path("Fw/Cmd/Sub", "coverage-integration-linux") == "../../../../index.html"
+    assert mirror._catalog_relative_path("TopLevel", "coverage-ut") == "../../index.html"
+    assert mirror._catalog_relative_path("TopLevel", "") == "../index.html"
 
 
 def test_mirror_module_is_idempotent():
@@ -194,33 +230,79 @@ def test_mirror_module_is_idempotent():
         _place_coverage(_make_module(source, mod_path), "summary_high.json")
 
         mirror.mirror_module(
-            source=source, dest=dest, module_path=mod_path, has_ut=True, subdir="coverage"
+            source=source, dest=dest, module_path=mod_path, has_ut=True,
+            subdir="coverage-ut", kind="ut",
         )
         # Drop a stale file that should be removed by the second run.
-        (dest / mod_path / "coverage" / "stale.html").write_text("stale", encoding="utf-8")
+        (dest / mod_path / "coverage-ut" / "stale.html").write_text("stale", encoding="utf-8")
 
         mirror.mirror_module(
-            source=source, dest=dest, module_path=mod_path, has_ut=True, subdir="coverage"
+            source=source, dest=dest, module_path=mod_path, has_ut=True,
+            subdir="coverage-ut", kind="ut",
         )
-        assert not (dest / mod_path / "coverage" / "stale.html").exists()
-        assert (dest / mod_path / "coverage" / "summary.json").is_file()
+        assert not (dest / mod_path / "coverage-ut" / "stale.html").exists()
+        assert (dest / mod_path / "coverage-ut" / "summary.json").is_file()
 
 
-def test_catalog_groups_and_rollup():
+def test_mirror_preserves_other_kind():
+    """Mirroring 'ut' must not clobber existing 'integration' data."""
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
         dest = Path(tmp) / "dest"
         source.mkdir()
         dest.mkdir()
+        mod_path = "Svc/CmdDispatcher"
+        _place_coverage(_make_module(source, mod_path), "summary_high.json")
 
-        _place_coverage(_make_module(source, "Svc/CmdDispatcher"), "summary_high.json")
-        _place_coverage(_make_module(source, "Svc/Health"), "summary_mid.json")
-        _place_coverage(_make_module(source, "Drv/I2c"), "summary_low.json")
-        _make_module(source, "Drv/LinuxGpio", with_ut=False)
-        # Global --all run
-        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage" / "summary.json") if (source / "coverage").exists() else None
-        (source / "coverage").mkdir(exist_ok=True)
-        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage" / "summary.json")
+        # Pre-populate integration coverage on dest (as if a previous run wrote it).
+        int_dir = dest / mod_path / "coverage-integration"
+        int_dir.mkdir(parents=True)
+        (int_dir / "summary.json").write_text('{"line_covered": 10}', encoding="utf-8")
+        (int_dir / "coverage.html").write_text("<html>int report</html>", encoding="utf-8")
+
+        # Mirror UT coverage.
+        mirror.mirror_module(
+            source=source, dest=dest, module_path=mod_path, has_ut=True,
+            subdir="coverage-ut", kind="ut",
+        )
+        # UT data is written.
+        assert (dest / mod_path / "coverage-ut" / "summary.json").is_file()
+        # Integration data is preserved.
+        assert (dest / mod_path / "coverage-integration" / "summary.json").is_file()
+        assert (dest / mod_path / "coverage-integration" / "coverage.html").is_file()
+
+
+def test_catalog_combined_landing_page():
+    """Catalog produces a combined index.html with UT and integration data."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp)
+
+        # Simulate baseline worktree with both kinds for some modules.
+        for mod_path in ["Svc/CmdDispatcher", "Svc/Health", "Drv/I2c"]:
+            ut_dir = dest / mod_path / "coverage-ut"
+            ut_dir.mkdir(parents=True)
+            shutil.copy2(FIXTURES / "summary_high.json", ut_dir / "summary.json")
+            (ut_dir / "index.html").write_text("<html>ut report</html>", encoding="utf-8")
+
+        # Integration-int coverage only for some
+        for mod_path in ["Svc/CmdDispatcher", "Drv/I2c"]:
+            int_dir = dest / mod_path / "coverage-integration-linux"
+            int_dir.mkdir(parents=True)
+            shutil.copy2(FIXTURES / "summary_mid.json", int_dir / "summary.json")
+            (int_dir / "index.html").write_text("<html>int report</html>", encoding="utf-8")
+
+        # Module without coverage at all
+        (dest / "Drv" / "LinuxGpio" / "coverage-ut").mkdir(parents=True)
+
+        # Global UT
+        (dest / "coverage-ut").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", dest / "coverage-ut" / "summary.json")
+        (dest / "coverage-ut" / "coverage-all.html").write_text("<html>global ut</html>", encoding="utf-8")
+
+        # Global integration-linux
+        (dest / "coverage-integration-linux").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration-linux" / "summary.json")
+        (dest / "coverage-integration-linux" / "coverage-all.html").write_text("<html>global int</html>", encoding="utf-8")
 
         modules_jsonl = _modules_jsonl([
             {"path": "Svc/CmdDispatcher", "has_ut": True},
@@ -230,10 +312,8 @@ def test_catalog_groups_and_rollup():
         ])
 
         rc = catalog.main([
-            "--source", str(source),
             "--dest", str(dest),
             "--modules-jsonl", str(modules_jsonl),
-            "--coverage-subdirectory", "coverage",
             "--ref", "devel",
             "--ref-type", "branch",
             "--commit", "deadbeefcafe1234",
@@ -242,32 +322,35 @@ def test_catalog_groups_and_rollup():
         assert rc == 0
 
         cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
-        assert cat_doc["schema"] == 1
+        assert cat_doc["schema"] == 2
         assert cat_doc["ref"] == "devel"
         assert cat_doc["commit"] == "deadbeefcafe1234"
         assert len(cat_doc["modules"]) == 4
+
+        # Check per-module kind entries (dynamically discovered)
         by_path = {m["path"]: m for m in cat_doc["modules"]}
-        assert by_path["Drv/LinuxGpio"]["has_coverage"] is False
-        assert by_path["Drv/LinuxGpio"]["has_ut"] is False
-        assert by_path["Svc/CmdDispatcher"]["line_pct"] == 98.0
-        assert by_path["Svc/CmdDispatcher"]["function_pct"] == 93.33
-        # Overall came from a high fixture
-        assert cat_doc["overall"]["line_pct"] == 98.0
-        assert cat_doc["overall"]["function_pct"] == 93.33
+        assert by_path["Svc/CmdDispatcher"]["ut"]["has_coverage"] is True
+        assert by_path["Svc/CmdDispatcher"]["integration-linux"]["has_coverage"] is True
+        assert by_path["Svc/Health"]["ut"]["has_coverage"] is True
+        # Svc/Health has no integration-linux dir so no entry expected
+        assert by_path["Drv/LinuxGpio"]["ut"]["has_coverage"] is False
+
+        # Overall entries
+        assert cat_doc["overall"]["ut"] is not None
+        assert cat_doc["overall"]["ut"]["line_pct"] == 98.0
+        assert cat_doc["overall"]["integration-linux"] is not None
 
         index_html = (dest / "index.html").read_text(encoding="utf-8")
-        # Spot-check structure
         assert "<details" in index_html and "Svc/" in index_html and "Drv/" in index_html
         assert "Svc/CmdDispatcher" in index_html
         assert "Drv/LinuxGpio" in index_html
-        assert "(no UT)" in index_html
-        # All three coverage columns present
+        assert "unit test" in index_html
+        assert "integration (linux)" in index_html
+        assert ">Kind</th>" in index_html
         assert ">Line</th>" in index_html
         assert ">Function</th>" in index_html
         assert ">Branch</th>" in index_html
-        # Color classes applied
         assert "pct-green" in index_html
-        assert "pct-red" in index_html
 
 
 def test_compare_flags_regression_and_new_module():
@@ -287,12 +370,12 @@ def test_compare_flags_regression_and_new_module():
         (source / "coverage").mkdir(exist_ok=True)
         shutil.copy2(FIXTURES / "summary_mid.json", source / "coverage/summary.json")
 
-        # Baseline side: CmdDispatcher had high coverage
-        (baseline / "Svc" / "CmdDispatcher" / "coverage").mkdir(parents=True)
-        shutil.copy2(FIXTURES / "summary_high.json", baseline / "Svc/CmdDispatcher/coverage/summary.json")
+        # Baseline side: CmdDispatcher had high coverage (in coverage-ut subdir)
+        (baseline / "Svc" / "CmdDispatcher" / "coverage-ut").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", baseline / "Svc/CmdDispatcher/coverage-ut/summary.json")
         # Baseline global
-        (baseline / "coverage").mkdir(exist_ok=True)
-        shutil.copy2(FIXTURES / "summary_high.json", baseline / "coverage/summary.json")
+        (baseline / "coverage-ut").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", baseline / "coverage-ut/summary.json")
 
         modules_jsonl = _modules_jsonl([
             {"path": "Svc/CmdDispatcher", "has_ut": True},
@@ -306,7 +389,7 @@ def test_compare_flags_regression_and_new_module():
             "--source", str(source),
             "--baseline", str(baseline),
             "--modules-jsonl", str(modules_jsonl),
-            "--coverage-subdirectory", "coverage",
+            "--coverage-kind", "ut",
             "--base-ref", "devel",
             "--threshold", "0.5",
             "--output", str(out),
@@ -319,8 +402,10 @@ def test_compare_flags_regression_and_new_module():
         assert "-8.33" in body  # function delta: mid(85.0) - high(93.33)
         assert "Svc/Foo" in body
         assert "#### New modules" in body
-        assert "#### Modules without UTs" in body
-        assert "Drv/LinuxGpio" in body
+        # "Modules without UTs" section is removed for all kinds
+        assert "Modules without UTs" not in body
+        # Kind label in header
+        assert "Unit Test coverage report" in body
         regression_list = json.loads(regs.read_text(encoding="utf-8"))
         paths = {r["path"] for r in regression_list}
         assert "Svc/CmdDispatcher" in paths
@@ -329,7 +414,7 @@ def test_compare_flags_regression_and_new_module():
             "--source", str(source),
             "--baseline", str(baseline),
             "--modules-jsonl", str(modules_jsonl),
-            "--coverage-subdirectory", "coverage",
+            "--coverage-kind", "ut",
             "--base-ref", "devel",
             "--threshold", "0.5",
             "--output", str(out),
@@ -337,6 +422,147 @@ def test_compare_flags_regression_and_new_module():
             "--fail-on-regression",
         ])
         assert rc2 == 1
+
+
+def test_compare_integration_kind_with_suffix():
+    """compare works with --coverage-kind integration-linux (with suffix)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "src"
+        baseline = Path(tmp) / "baseline"
+        source.mkdir()
+        baseline.mkdir()
+
+        (source / "Svc" / "CmdDispatcher" / "coverage").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", source / "Svc/CmdDispatcher/coverage/summary.json")
+        (source / "coverage").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", source / "coverage/summary.json")
+
+        # Baseline uses coverage-integration-linux subdir
+        (baseline / "Svc" / "CmdDispatcher" / "coverage-integration-linux").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", baseline / "Svc/CmdDispatcher/coverage-integration-linux/summary.json")
+        (baseline / "coverage-integration-linux").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", baseline / "coverage-integration-linux/summary.json")
+
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+        ])
+        out = Path(tmp) / "comment.md"
+
+        rc = compare.main([
+            "--source", str(source),
+            "--baseline", str(baseline),
+            "--modules-jsonl", str(modules_jsonl),
+            "--coverage-kind", "integration-linux",
+            "--base-ref", "devel",
+            "--threshold", "0.5",
+            "--output", str(out),
+        ])
+        assert rc == 0
+        body = out.read_text(encoding="utf-8")
+        assert "Integration (linux) coverage report" in body
+        assert "Modules without UTs" not in body
+
+
+def test_compare_summary_comment_output():
+    """--summary-output writes a separate per-module summary markdown."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "src"
+        baseline = Path(tmp) / "baseline"
+        source.mkdir()
+        baseline.mkdir()
+
+        (source / "Svc" / "CmdDispatcher" / "coverage").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", source / "Svc/CmdDispatcher/coverage/summary.json")
+        (source / "coverage").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage/summary.json")
+
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+        ])
+        out = Path(tmp) / "comment.md"
+        summary_out = Path(tmp) / "summary.md"
+
+        rc = compare.main([
+            "--source", str(source),
+            "--baseline", str(baseline),
+            "--modules-jsonl", str(modules_jsonl),
+            "--coverage-kind", "ut",
+            "--base-ref", "devel",
+            "--threshold", "0.5",
+            "--output", str(out),
+            "--summary-output", str(summary_out),
+            "--baseline-missing",
+        ])
+        assert rc == 0
+        body = summary_out.read_text(encoding="utf-8")
+        assert "Unit Test coverage summary" in body
+        assert "98.00" in body  # line percent from summary_high
+        assert "Svc/CmdDispatcher" in body
+        assert "<!-- fprime-coverage-summary-comment -->" in body
+
+
+def test_catalog_with_multiple_suffixes():
+    """Catalog discovers multiple integration suffixes dynamically."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp)
+
+        mod_path = "Svc/CmdDispatcher"
+        # UT coverage
+        ut_dir = dest / mod_path / "coverage-ut"
+        ut_dir.mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", ut_dir / "summary.json")
+        (ut_dir / "index.html").write_text("<html>ut report</html>", encoding="utf-8")
+
+        # integration-linux coverage
+        int_dir = dest / mod_path / "coverage-integration-linux"
+        int_dir.mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", int_dir / "summary.json")
+        (int_dir / "index.html").write_text("<html>int report</html>", encoding="utf-8")
+
+        # integration-hil-arm coverage
+        hil_dir = dest / mod_path / "coverage-integration-hil-arm"
+        hil_dir.mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", hil_dir / "summary.json")
+        (hil_dir / "index.html").write_text("<html>hil-arm report</html>", encoding="utf-8")
+
+        # Global overalls
+        (dest / "coverage-ut").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_high.json", dest / "coverage-ut" / "summary.json")
+        (dest / "coverage-integration-linux").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration-linux" / "summary.json")
+        (dest / "coverage-integration-hil-arm").mkdir(parents=True)
+        shutil.copy2(FIXTURES / "summary_mid.json", dest / "coverage-integration-hil-arm" / "summary.json")
+
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+        ])
+
+        rc = catalog.main([
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--ref-type", "branch",
+            "--commit", "abc123",
+            "--generated-at", "2026-05-29T00:00:00Z",
+        ])
+        assert rc == 0
+
+        cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
+        by_path = {m["path"]: m for m in cat_doc["modules"]}
+        mod = by_path["Svc/CmdDispatcher"]
+        assert mod["ut"]["has_coverage"] is True
+        assert mod["integration-linux"]["has_coverage"] is True
+        assert mod["integration-hil-arm"]["has_coverage"] is True
+
+        # Overall entries
+        assert cat_doc["overall"]["ut"] is not None
+        assert cat_doc["overall"]["integration-linux"] is not None
+        assert cat_doc["overall"]["integration-hil-arm"] is not None
+
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert "unit test" in index_html
+        assert "integration (linux)" in index_html
+        assert "integration (hil-arm)" in index_html
 
 
 def test_compare_baseline_missing_reports_no_baseline():
@@ -356,7 +582,7 @@ def test_compare_baseline_missing_reports_no_baseline():
             "--source", str(source),
             "--baseline", str(baseline),
             "--modules-jsonl", str(modules_jsonl),
-            "--coverage-subdirectory", "coverage",
+            "--coverage-kind", "ut",
             "--base-ref", "devel",
             "--threshold", "0.5",
             "--output", str(out),
@@ -377,16 +603,21 @@ def test_compare_baseline_missing_reports_no_baseline():
 
 TESTS = [
     test_discover_finds_modules_and_ut_flag,
+    test_discover_finds_library_modules,
     test_discover_ignores_commented_out_calls,
     test_summary_load_handles_missing_file_and_zero_total,
     test_summary_load_parses_gcovr_json,
-    test_mirror_module_renames_html_when_coverage_present,
+    test_mirror_module_renames_coverage_html_to_index,
     test_mirror_module_writes_placeholder_when_no_ut,
+    test_mirror_integration_placeholder,
     test_catalog_relative_path_math,
-    test_mirror_flatten_drops_coverage_subdir,
     test_mirror_module_is_idempotent,
-    test_catalog_groups_and_rollup,
+    test_mirror_preserves_other_kind,
+    test_catalog_combined_landing_page,
     test_compare_flags_regression_and_new_module,
+    test_compare_integration_kind_with_suffix,
+    test_compare_summary_comment_output,
+    test_catalog_with_multiple_suffixes,
     test_compare_baseline_missing_reports_no_baseline,
 ]
 

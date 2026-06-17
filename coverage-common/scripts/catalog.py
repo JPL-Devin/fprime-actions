@@ -1,9 +1,18 @@
 """Generate ``catalog.json`` and the top-level folder-tree ``index.html``.
 
+The catalog reads from the baseline worktree (``--dest``), dynamically
+scanning all ``coverage-*`` subdirectories for each module (e.g.
+``coverage-ut/``, ``coverage-integration-linux/``,
+``coverage-integration-hil-arm/``).  The resulting landing page shows one
+row per module per coverage kind so reviewers can see everything at a
+glance.
+
 Inputs:
     * A list of discovered modules (path, has_ut) from ``discover.py``.
-    * The working-tree root containing per-module ``<mod>/<coverage-subdir>/summary.json``
-      and the global ``<coverage-subdir>/summary.json``.
+    * The baseline worktree containing per-module
+      ``<mod>/coverage-ut/summary.json`` and/or
+      ``<mod>/coverage-integration/summary.json``, plus global
+      ``coverage-ut/summary.json`` and/or ``coverage-integration/summary.json``.
 
 Outputs (written to ``--dest``):
     * ``catalog.json`` -- machine-readable; see ``schema`` field for version.
@@ -27,7 +36,19 @@ from typing import Iterable, List, Optional
 
 from _summary import Summary, Totals, load_summary
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+def _kind_label(kind: str) -> str:
+    """Human-readable label for a coverage kind slug."""
+    if kind == "ut":
+        return "unit test"
+    # e.g. "integration-linux" -> "integration (int)"
+    if kind.startswith("integration-"):
+        suffix = kind[len("integration-"):]
+        return f"integration ({suffix})"
+    if kind == "integration":
+        return "integration"
+    return kind
 
 CSS = """\
 * { box-sizing: border-box; }
@@ -38,17 +59,17 @@ body {
 h1 { margin: 0 0 0.25rem 0; font-size: 1.4rem; }
 .meta { color: #57606a; font-size: 0.9rem; margin-bottom: 1rem; }
 .overall {
-  display: flex; gap: 1rem; align-items: baseline;
+  display: flex; gap: 1rem; align-items: baseline; flex-wrap: wrap;
   padding: 0.75rem 1rem; background: #f6f8fa; border: 1px solid #d0d7de;
   border-radius: 6px; margin-bottom: 1rem;
 }
 .overall a { color: #0969da; text-decoration: none; }
 .overall a:hover { text-decoration: underline; }
+.overall-row { display: flex; gap: 0.75rem; align-items: baseline; width: 100%; }
 details { border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 0.5rem; background: #ffffff; }
 details > summary {
   cursor: pointer; padding: 0.5rem 0.75rem; font-weight: 600;
-  display: grid; grid-template-columns: 1fr 6rem 6rem 6rem 6rem; gap: 0.5rem;
-  align-items: baseline; list-style: none;
+  list-style: none;
 }
 details > summary::-webkit-details-marker { display: none; }
 details > summary::before { content: "\\25B6"; display: inline-block; margin-right: 0.4rem; transition: transform 0.1s; }
@@ -65,6 +86,7 @@ table a:hover { text-decoration: underline; }
 .pct-yellow { color: #9a6700; }
 .pct-red    { color: #cf222e; }
 .no-ut, .no-cov { color: #6e7781; font-style: italic; }
+.kind-label { color: #57606a; font-size: 0.85rem; font-weight: normal; }
 .section-title { margin: 1.25rem 0 0.5rem 0; font-size: 1.05rem; }
 """
 
@@ -80,15 +102,21 @@ def _pct_class(pct: float, has_coverage: bool) -> str:
 
 
 @dataclass
-class ModuleEntry:
-    """One row in the catalog."""
-
-    path: str  # e.g. "Svc/CmdDispatcher"
-    has_ut: bool
+class KindEntry:
+    """Coverage data for one module under one kind (ut or integration)."""
+    kind: str
     has_coverage: bool
-    report: str  # relative URL inside the baseline branch
-    summary_path: Optional[str] = None  # relative URL to summary.json
+    report: str  # relative URL to the coverage report
+    summary_path: Optional[str] = None
     summary: Optional[Summary] = None
+
+
+@dataclass
+class ModuleEntry:
+    """One module in the catalog, with coverage data per kind."""
+    path: str
+    has_ut: bool
+    kinds: dict  # kind -> KindEntry  (field(default_factory=dict) below)
 
     @property
     def top_dir(self) -> str:
@@ -98,33 +126,32 @@ class ModuleEntry:
 @dataclass
 class Group:
     """Modules grouped by their top-level directory (Fw, Svc, ...)."""
-
     name: str
     modules: List[ModuleEntry] = field(default_factory=list)
 
-    def rollup(self) -> Summary:
-        """Sum-weighted rollup across all modules in the group."""
+    def rollup(self, kind: str) -> Summary:
+        """Sum-weighted rollup across all modules for a given kind."""
+        entries = [
+            m.kinds[kind].summary
+            for m in self.modules
+            if kind in m.kinds and m.kinds[kind].summary is not None
+        ]
         line = Totals(
-            covered=sum(m.summary.line.covered for m in self.modules if m.summary),
-            total=sum(m.summary.line.total for m in self.modules if m.summary),
+            covered=sum(e.line.covered for e in entries),
+            total=sum(e.line.total for e in entries),
         )
         function = Totals(
-            covered=sum(m.summary.function.covered for m in self.modules if m.summary),
-            total=sum(m.summary.function.total for m in self.modules if m.summary),
+            covered=sum(e.function.covered for e in entries),
+            total=sum(e.function.total for e in entries),
         )
         branch = Totals(
-            covered=sum(m.summary.branch.covered for m in self.modules if m.summary),
-            total=sum(m.summary.branch.total for m in self.modules if m.summary),
+            covered=sum(e.branch.covered for e in entries),
+            total=sum(e.branch.total for e in entries),
         )
         return Summary(line=line, function=function, branch=branch)
 
 
 def _group_modules(entries: Iterable[ModuleEntry]) -> List[Group]:
-    """Group entries by top-level directory, sorted alphabetically.
-
-    Modules with no top-level component (paths without a ``/``) are placed in
-    a synthetic ``"(root)"`` group.
-    """
     groups: dict[str, Group] = {}
     for entry in entries:
         groups.setdefault(entry.top_dir, Group(name=entry.top_dir)).modules.append(entry)
@@ -139,58 +166,108 @@ def _render_cell_pct(pct: float, has_coverage: bool) -> str:
     return f'<td class="num {_pct_class(pct, True)}">{pct:.2f}%</td>'
 
 
-def _render_summary_row(label: str, line_pct: float, function_pct: float, branch_pct: float, has_coverage: bool) -> str:
-    label_esc = html.escape(label)
-    line_cell = (
-        f'<span class="num {_pct_class(line_pct, has_coverage)}">{line_pct:.2f}%</span>'
-        if has_coverage
-        else '<span class="num no-cov">&mdash;</span>'
+def _render_kind_row(mod: ModuleEntry, kind: str) -> str:
+    """Render one table row for a module+kind combination."""
+    ke = mod.kinds.get(kind)
+    path_esc = html.escape(mod.path)
+    kind_label = _kind_label(kind)
+
+    if ke is not None and ke.has_coverage and ke.summary is not None:
+        report_esc = html.escape(ke.report)
+        line_html = _render_cell_pct(ke.summary.line.percent, True)
+        function_html = _render_cell_pct(ke.summary.function.percent, True)
+        branch_html = _render_cell_pct(ke.summary.branch.percent, True)
+        name_cell = f'<a href="{report_esc}">{path_esc}</a>'
+    elif ke is not None:
+        report_esc = html.escape(ke.report)
+        line_html = _render_cell_pct(0.0, False)
+        function_html = _render_cell_pct(0.0, False)
+        branch_html = _render_cell_pct(0.0, False)
+        name_cell = f'<a href="{report_esc}">{path_esc}</a>'
+    else:
+        line_html = _render_cell_pct(0.0, False)
+        function_html = _render_cell_pct(0.0, False)
+        branch_html = _render_cell_pct(0.0, False)
+        name_cell = path_esc
+
+    return (
+        f'<tr class="row">'
+        f'<td>{name_cell}</td>'
+        f'<td class="kind-label">{html.escape(kind_label)}</td>'
+        f"{line_html}{function_html}{branch_html}"
+        f"</tr>"
     )
-    function_cell = (
-        f'<span class="num {_pct_class(function_pct, has_coverage)}">{function_pct:.2f}%</span>'
-        if has_coverage
-        else '<span class="num no-cov">&mdash;</span>'
-    )
-    branch_cell = (
-        f'<span class="num {_pct_class(branch_pct, has_coverage)}">{branch_pct:.2f}%</span>'
-        if has_coverage
-        else '<span class="num no-cov">&mdash;</span>'
-    )
-    return f"<span>{label_esc}</span>{line_cell}{function_cell}{branch_cell}<span></span>"
 
 
-def _render_group(group: Group) -> str:
-    rollup = group.rollup()
-    has_coverage = rollup.line.total > 0
+def _present_kinds(entries: List[ModuleEntry]) -> List[str]:
+    """Return the list of kinds that have at least one module with data.
+
+    Sorted with ``ut`` first, then alphabetically.
+    """
+    present = set()
+    for entry in entries:
+        for kind, ke in entry.kinds.items():
+            if ke.has_coverage:
+                present.add(kind)
+    return sorted(present, key=lambda k: (k != "ut", k))
+
+
+def _render_group(group: Group, kinds: List[str]) -> str:
     open_attr = " open" if group.name in {"Fw", "Svc"} else ""
-    header = _render_summary_row(group.name + "/", rollup.line.percent, rollup.function.percent, rollup.branch.percent, has_coverage)
+
+    # Build a compact summary string for the group header
+    parts = [f"<strong>{html.escape(group.name)}/</strong>"]
+    for kind in kinds:
+        rollup = group.rollup(kind)
+        has_cov = rollup.line.total > 0
+        label = _kind_label(kind)
+        if has_cov:
+            cls = _pct_class(rollup.line.percent, True)
+            parts.append(
+                f'<span class="kind-label">{html.escape(label)}:</span> '
+                f'<span class="{cls}">{rollup.line.percent:.2f}%</span>'
+            )
+        else:
+            parts.append(
+                f'<span class="kind-label">{html.escape(label)}:</span> '
+                f'<span class="no-cov">&mdash;</span>'
+            )
+    header = " &middot; ".join(parts)
 
     rows: list[str] = []
     for mod in group.modules:
-        path_esc = html.escape(mod.path)
-        report_esc = html.escape(mod.report)
-        if mod.has_coverage and mod.summary is not None:
-            line_html = _render_cell_pct(mod.summary.line.percent, True)
-            function_html = _render_cell_pct(mod.summary.function.percent, True)
-            branch_html = _render_cell_pct(mod.summary.branch.percent, True)
-            note = ""
-        else:
-            line_html = _render_cell_pct(0.0, False)
-            function_html = _render_cell_pct(0.0, False)
-            branch_html = _render_cell_pct(0.0, False)
-            note = '<span class="no-ut">(no UT)</span>' if not mod.has_ut else '<span class="no-cov">(no coverage)</span>'
-        rows.append(
-            f'<tr class="row">'
-            f'<td><a href="{report_esc}">{path_esc}</a> {note}</td>'
-            f"{line_html}{function_html}{branch_html}"
-            f"</tr>"
-        )
+        for kind in kinds:
+            rows.append(_render_kind_row(mod, kind))
 
     return (
         f"<details{open_attr}><summary>{header}</summary>"
-        f'<table><thead><tr><th>Module</th><th class="num">Line</th><th class="num">Function</th><th class="num">Branch</th></tr></thead>'
+        f'<table><thead><tr>'
+        f'<th>Module</th><th>Kind</th>'
+        f'<th class="num">Line</th><th class="num">Function</th><th class="num">Branch</th>'
+        f'</tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
         f"</details>"
+    )
+
+
+def _render_overall_kind(kind: str, summary: Optional[Summary], report_href: str) -> str:
+    """Render one line of the overall section for a given kind."""
+    label = _kind_label(kind)
+    if summary is not None and summary.line.total > 0:
+        return (
+            f'<div class="overall-row">'
+            f'<strong>{html.escape(label).title()}:</strong> '
+            f'<span class="{_pct_class(summary.line.percent, True)}">{summary.line.percent:.2f}% line</span>, '
+            f'<span class="{_pct_class(summary.function.percent, True)}">{summary.function.percent:.2f}% function</span>, '
+            f'<span class="{_pct_class(summary.branch.percent, True)}">{summary.branch.percent:.2f}% branch</span>'
+            f' &middot; <a href="{html.escape(report_href)}">full report &rarr;</a>'
+            f"</div>"
+        )
+    return (
+        f'<div class="overall-row">'
+        f'<strong>{html.escape(label).title()}:</strong> '
+        f'<span class="no-cov">no coverage data</span>'
+        f"</div>"
     )
 
 
@@ -200,29 +277,25 @@ def render_index_html(
     ref_type: str,
     commit: str,
     generated_at: str,
-    overall: Optional[Summary],
-    overall_report: str,
+    overalls: dict,  # kind -> (Optional[Summary], report_href)
     entries: List[ModuleEntry],
 ) -> str:
-    """Render the folder-tree catalog page."""
+    """Render the folder-tree catalog page with both UT and integration coverage."""
+    kinds = _present_kinds(entries)
+    # If no kind has data yet, show at least 'ut' so the page isn't empty
+    if not kinds:
+        kinds = ["ut"]
+
     groups = _group_modules(entries)
 
-    if overall is not None and overall.line.total > 0:
-        overall_text = (
-            f'<strong>Overall:</strong> '
-            f'<span class="{_pct_class(overall.line.percent, True)}">{overall.line.percent:.2f}% line</span>, '
-            f'<span class="{_pct_class(overall.function.percent, True)}">{overall.function.percent:.2f}% function</span>, '
-            f'<span class="{_pct_class(overall.branch.percent, True)}">{overall.branch.percent:.2f}% branch</span>'
-        )
-    else:
-        overall_text = '<strong>Overall:</strong> <span class="no-cov">no coverage data</span>'
-    overall_link = (
-        f'&middot; <a href="{html.escape(overall_report)}">full report &rarr;</a>'
-        if overall is not None
-        else ""
-    )
+    overall_lines = []
+    all_overall_kinds = sorted(overalls.keys(), key=lambda k: (k != "ut", k))
+    for kind in all_overall_kinds:
+        summary, report_href = overalls.get(kind, (None, ""))
+        overall_lines.append(_render_overall_kind(kind, summary, report_href))
+    overall_html = "\n".join(overall_lines)
 
-    group_html = "\n".join(_render_group(g) for g in groups)
+    group_html = "\n".join(_render_group(g, kinds) for g in groups)
 
     return (
         "<!DOCTYPE html>\n"
@@ -232,7 +305,7 @@ def render_index_html(
         f"<h1>F\u00b4 Coverage</h1>"
         f'<div class="meta">{html.escape(ref_type)} <code>{html.escape(ref)}</code> '
         f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
-        f'<div class="overall">{overall_text} {overall_link}</div>'
+        f'<div class="overall">{overall_html}</div>'
         f'<div class="section-title">Modules</div>'
         f"{group_html}"
         f"</body></html>\n"
@@ -246,27 +319,43 @@ def build_catalog(
     ref_type: str,
     commit: str,
     generated_at: str,
-    overall: Optional[Summary],
-    overall_report: str,
+    overalls: dict,  # kind -> (Optional[Summary], report_href)
 ) -> dict:
+    # Collect all kinds across modules and overalls
+    all_kinds = set()
+    for m in modules:
+        all_kinds.update(m.kinds.keys())
+    all_kinds.update(overalls.keys())
+    all_kinds_sorted = sorted(all_kinds, key=lambda k: (k != "ut", k))
+
     out_modules = []
     for m in modules:
-        entry = {
+        entry: dict = {
             "path": m.path,
             "has_ut": m.has_ut,
-            "has_coverage": m.has_coverage,
-            "report": m.report,
         }
-        if m.summary_path is not None:
-            entry["summary"] = m.summary_path
-        if m.summary is not None:
-            entry.update(m.summary.to_catalog_entry())
+        for kind in all_kinds_sorted:
+            ke = m.kinds.get(kind)
+            kind_entry: dict = {"has_coverage": False}
+            if ke is not None:
+                kind_entry["has_coverage"] = ke.has_coverage
+                kind_entry["report"] = ke.report
+                if ke.summary_path is not None:
+                    kind_entry["summary"] = ke.summary_path
+                if ke.summary is not None:
+                    kind_entry.update(ke.summary.to_catalog_entry())
+            entry[kind] = kind_entry
         out_modules.append(entry)
 
-    overall_entry = None
-    if overall is not None and overall.line.total > 0:
-        overall_entry = overall.to_catalog_entry()
-        overall_entry["report"] = overall_report
+    overall_entries = {}
+    for kind in all_kinds_sorted:
+        summary, report_href = overalls.get(kind, (None, ""))
+        if summary is not None and summary.line.total > 0:
+            oe = summary.to_catalog_entry()
+            oe["report"] = report_href
+            overall_entries[kind] = oe
+        else:
+            overall_entries[kind] = None
 
     return {
         "schema": SCHEMA_VERSION,
@@ -274,26 +363,22 @@ def build_catalog(
         "ref_type": ref_type,
         "commit": commit,
         "generated_at": generated_at,
-        "overall": overall_entry,
+        "overall": overall_entries,
         "modules": out_modules,
     }
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True, help="Working-tree root containing module dirs")
-    parser.add_argument("--dest", type=Path, required=True, help="Where to write catalog.json + index.html")
+    parser.add_argument(
+        "--dest", type=Path, required=True,
+        help="Baseline worktree root (read both coverage kinds + write catalog)",
+    )
     parser.add_argument(
         "--modules-jsonl",
         type=Path,
         required=True,
         help="JSON-Lines module list from discover.py",
-    )
-    parser.add_argument(
-        "--coverage-subdirectory",
-        default="coverage",
-        help="Subdirectory under each module holding coverage artifacts; "
-        '"" flattens (default: "coverage")',
     )
     parser.add_argument("--ref", required=True, help="Source ref name (branch or tag)")
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
@@ -305,12 +390,8 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    source = args.source.resolve()
     dest = args.dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
-
-    subdir = args.coverage_subdirectory
-    subdir_segment = f"{subdir}/" if subdir else ""
 
     generated_at = args.generated_at or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -323,24 +404,37 @@ def main(argv=None) -> int:
             rec = json.loads(line)
             path = rec["path"]
             has_ut = bool(rec.get("has_ut", False))
-            mod_summary_path = source / path / "coverage" / "summary.json"
-            summary = load_summary(mod_summary_path) if has_ut else None
-            has_coverage = summary is not None and summary.line.total > 0
-            report_path = f"{path}/{subdir_segment}index.html"
-            summary_rel = f"{path}/{subdir_segment}summary.json" if has_coverage else None
-            entries.append(
-                ModuleEntry(
-                    path=path,
-                    has_ut=has_ut,
-                    has_coverage=has_coverage,
-                    report=report_path,
-                    summary_path=summary_rel,
-                    summary=summary,
-                )
-            )
 
-    overall_summary = load_summary(source / "coverage" / "summary.json")
-    overall_report = f"{subdir_segment}coverage-all.html" if subdir else "coverage-all.html"
+            # Discover all coverage-* subdirs for this module
+            kinds_dict: dict[str, KindEntry] = {}
+            mod_dir = dest / path
+            if mod_dir.is_dir():
+                for d in sorted(mod_dir.iterdir()):
+                    if d.is_dir() and d.name.startswith("coverage-"):
+                        kind = d.name[len("coverage-"):]
+                        summary_file = d / "summary.json"
+                        summary = load_summary(summary_file)
+                        has_coverage = summary is not None and summary.line.total > 0
+                        report_path = f"{path}/{d.name}/index.html"
+                        summary_rel = f"{path}/{d.name}/summary.json" if has_coverage else None
+                        kinds_dict[kind] = KindEntry(
+                            kind=kind,
+                            has_coverage=has_coverage,
+                            report=report_path,
+                            summary_path=summary_rel,
+                            summary=summary,
+                        )
+
+            entries.append(ModuleEntry(path=path, has_ut=has_ut, kinds=kinds_dict))
+
+    # Discover global overalls from top-level coverage-* dirs
+    overalls: dict[str, tuple] = {}
+    for d in sorted(dest.iterdir()):
+        if d.is_dir() and d.name.startswith("coverage-"):
+            kind = d.name[len("coverage-"):]
+            overall_summary = load_summary(d / "summary.json")
+            report_href = f"{d.name}/coverage-all.html"
+            overalls[kind] = (overall_summary, report_href)
 
     catalog = build_catalog(
         modules=entries,
@@ -348,8 +442,7 @@ def main(argv=None) -> int:
         ref_type=args.ref_type,
         commit=args.commit,
         generated_at=generated_at,
-        overall=overall_summary,
-        overall_report=overall_report,
+        overalls=overalls,
     )
     (dest / "catalog.json").write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
 
@@ -358,8 +451,7 @@ def main(argv=None) -> int:
         ref_type=args.ref_type,
         commit=args.commit,
         generated_at=generated_at,
-        overall=overall_summary,
-        overall_report=overall_report,
+        overalls=overalls,
         entries=entries,
     )
     (dest / "index.html").write_text(html_text, encoding="utf-8")

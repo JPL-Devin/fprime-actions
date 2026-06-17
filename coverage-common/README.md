@@ -8,6 +8,9 @@ Most users should not invoke this action directly; use `coverage-check` or
 discover / global-coverage / per-module steps stay in one place and so that
 custom workflows can reuse it if needed.
 
+For **integration test** coverage, see
+[`coverage-integration-common`](../coverage-integration-common/).
+
 ## Prerequisites
 
 The caller must have already generated and built the UT cache. Use
@@ -51,8 +54,6 @@ test fixtures.
    number. Passes `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file`
    to gcovr as defense against counter-overflow bugs.
 3. Runs `fprime-util check --coverage` in each module directory with a UT.
-4. Renames each module's `coverage.html` to `index.html`. The global
-   `coverage-all.html` is **not** renamed.
 
 ## Inputs
 
@@ -78,10 +79,17 @@ test fixtures.
   `--strict` (or set the `strict` input on the action to `'true'`) to
   propagate per-module failures as a non-zero exit.
 * `compare.py` &mdash; PR-side delta + sticky comment markdown (used by
-  `coverage-check`).
+  `coverage-check`). Accepts any `--coverage-kind` slug (e.g. `ut`,
+  `integration-linux`, `integration-hil-arm`). Also produces a standalone
+  summary comment (`--summary-output`) with absolute coverage numbers.
 * `mirror.py` &mdash; copies coverage outputs into the baseline worktree,
-  writes placeholder pages, invokes `catalog.py` (used by `coverage-update`).
-* `catalog.py` &mdash; produces `catalog.json` + folder-tree `index.html`.
+  renames `coverage.html` → `index.html` in each subdirectory, writes
+  placeholder pages, invokes `catalog.py` (used by `coverage-update`).
+  Accepts any `--coverage-kind` slug; only writes the current kind's
+  subdirectory, preserving all other kinds' data.
+* `catalog.py` &mdash; produces `catalog.json` + folder-tree `index.html`
+  by **dynamically scanning** all `coverage-*` subdirectories in the
+  baseline worktree (supports any number of coverage kinds/suffixes).
 * `_summary.py` &mdash; shared gcovr `--json-summary` reader.
 
 ## Tests

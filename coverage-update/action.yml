@@ -1,10 +1,13 @@
 name: "F´ Coverage (update)"
 description: >
-  Mirror coverage outputs (produced by coverage-common) to the
-  per-base-branch orphan branch (coverage/<ref-name>).  Intended to run
-  on push events (devel, release/**, tags) with permissions:
-  { contents: write }.  Skipped on fork pushes.  Call the coverage-common
-  action first and pass its 'modules-jsonl' output into this action.
+  Mirror coverage outputs onto the coverage/<ref> orphan branch.  Call
+  coverage-common (or coverage-integration-common) first to produce the
+  coverage outputs, then pass its 'modules-jsonl' output into this action.
+
+  This action only writes the coverage-<kind> subdirectories for the
+  current kind.  The other kind's data is preserved on the branch so
+  unit-test and integration coverage share the same branch and the
+  combined landing page includes both.
 inputs:
   working-directory:
     description: "Directory the coverage outputs were produced in (should match coverage-common)"
@@ -13,87 +16,102 @@ inputs:
   modules-jsonl:
     description: "Path to the JSON-Lines file produced by coverage-common (modules-jsonl output)"
     required: true
-  baseline-branch-prefix:
-    description: "Prefix applied to <ref-name> to form the baseline branch name"
-    required: false
-    default: "coverage"
-  coverage-subdirectory:
+  coverage-kind:
     description: >
-      Subdirectory under each module in the baseline branch holding coverage
-      artifacts.  Set to "" to flatten (drop the shadow folder).
+      Coverage kind slug (e.g. 'ut', 'integration-linux',
+      'integration-hil-arm').  Controls the subdirectory name used
+      on the baseline branch (coverage-<kind>/).  For integration
+      coverage, pass the output of coverage-integration-common's
+      'coverage-kind' output.
+    required: false
+    default: "ut"
+  baseline-branch-prefix:
+    description: "Prefix applied to <ref> to form the baseline branch name"
     required: false
     default: "coverage"
-
-outputs:
-  catalog-path:
-    description: "Absolute path to the generated catalog.json"
-    value: ${{ steps.catalog.outputs.catalog-path }}
-  baseline-branch:
-    description: "Name of the baseline branch that was written"
-    value: ${{ steps.catalog.outputs.baseline-branch }}
+  ref:
+    description: "The git ref whose coverage is being recorded (e.g. devel)"
+    required: false
+    default: ${{ github.ref_name }}
 
 runs:
   using: "composite"
   steps:
-    - name: "Compute ref / ref-type"
-      id: ref
+    - name: "Resolve baseline branch"
+      id: resolve
       shell: bash
       env:
-        REF: ${{ github.ref }}
-        REF_NAME: ${{ github.ref_name }}
+        REF: ${{ inputs.ref }}
+        PREFIX: ${{ inputs.baseline-branch-prefix }}
       run: |
-        echo "ref-name=${REF_NAME}" >> "$GITHUB_OUTPUT"
-        case "$REF" in
-          refs/tags/*) echo "ref-type=tag"    >> "$GITHUB_OUTPUT" ;;
-          *)           echo "ref-type=branch" >> "$GITHUB_OUTPUT" ;;
-        esac
+        BASELINE_BRANCH="${PREFIX}/${REF}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+        echo "Publishing to ${BASELINE_BRANCH}"
 
-    - name: "Mirror to baseline branch"
-      id: catalog
-      if: github.event.repository.fork == false
+    - name: "Checkout or create baseline worktree"
+      id: worktree
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        BASELINE_BRANCH: ${{ steps.resolve.outputs.baseline-branch }}
+        GIT_AUTHOR_NAME: "github-actions[bot]"
+        GIT_AUTHOR_EMAIL: "github-actions[bot]@users.noreply.github.com"
+        GIT_COMMITTER_NAME: "github-actions[bot]"
+        GIT_COMMITTER_EMAIL: "github-actions[bot]@users.noreply.github.com"
+      run: |
+        BASELINE_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-baseline"
+        rm -rf "$BASELINE_DIR"
+        if git fetch origin "${BASELINE_BRANCH}:refs/remotes/origin/${BASELINE_BRANCH}" 2>/dev/null; then
+          git worktree add --detach "$BASELINE_DIR" "origin/${BASELINE_BRANCH}"
+        else
+          echo "::notice::Creating new orphan branch ${BASELINE_BRANCH}"
+          git worktree add --detach "$BASELINE_DIR"
+          cd "$BASELINE_DIR"
+          git checkout --orphan "$BASELINE_BRANCH"
+          git rm -rf --quiet . 2>/dev/null || true
+          git commit --allow-empty -m "chore: seed ${BASELINE_BRANCH} coverage branch"
+        fi
+        echo "baseline-dir=${BASELINE_DIR}" >> "$GITHUB_OUTPUT"
+
+    - name: "Mirror coverage outputs"
       working-directory: ${{ inputs.working-directory }}
       shell: bash
       env:
         COMMON_PATH: ${{ github.action_path }}/../coverage-common
-        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
-        REF_NAME: ${{ steps.ref.outputs.ref-name }}
-        REF_TYPE: ${{ steps.ref.outputs.ref-type }}
-        SUBDIR: ${{ inputs.coverage-subdirectory }}
+        BASELINE_DIR: ${{ steps.worktree.outputs.baseline-dir }}
         MODULES_JSONL: ${{ inputs.modules-jsonl }}
-        COMMIT_SHA: ${{ github.sha }}
+        COVERAGE_KIND: ${{ inputs.coverage-kind }}
+        REF: ${{ inputs.ref }}
+        COMMIT: ${{ github.sha }}
       run: |
-        set -e
-        BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
-        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
-        BASELINE_DIR="${RUNNER_TEMP:-/tmp}/fprime-coverage-baseline"
-        rm -rf "$BASELINE_DIR"
-        git config user.name  "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        if git fetch origin "${BASELINE_BRANCH}:refs/remotes/origin/${BASELINE_BRANCH}" 2>/dev/null; then
-          git worktree add -B "$BASELINE_BRANCH" "$BASELINE_DIR" "origin/${BASELINE_BRANCH}"
-        else
-          git worktree add --detach "$BASELINE_DIR" "$(git rev-parse HEAD)"
-          git -C "$BASELINE_DIR" checkout --orphan "$BASELINE_BRANCH"
-          git -C "$BASELINE_DIR" rm -rf --quiet . || true
-        fi
-
         python3 "${COMMON_PATH}/scripts/mirror.py" \
           --source . \
           --dest "$BASELINE_DIR" \
           --modules-jsonl "$MODULES_JSONL" \
-          --coverage-subdirectory "$SUBDIR" \
-          --ref "$REF_NAME" \
-          --ref-type "$REF_TYPE" \
-          --commit "$COMMIT_SHA"
+          --coverage-kind "$COVERAGE_KIND" \
+          --ref "$REF" \
+          --ref-type branch \
+          --commit "$COMMIT" \
+          --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-        echo "catalog-path=${BASELINE_DIR}/catalog.json" >> "$GITHUB_OUTPUT"
-
-        git -C "$BASELINE_DIR" add -A
-        if git -C "$BASELINE_DIR" diff --cached --quiet; then
-          echo "No coverage changes to commit; skipping push."
-        else
-          SHORT_SHA=$(git rev-parse --short "$COMMIT_SHA")
-          SUBJECT=$(git log -1 --format=%s "$COMMIT_SHA" || echo "coverage update")
-          git -C "$BASELINE_DIR" commit -m "coverage: ${SHORT_SHA} ${SUBJECT}"
-          git -C "$BASELINE_DIR" push origin "$BASELINE_BRANCH"
+    - name: "Commit and push"
+      shell: bash
+      env:
+        BASELINE_DIR: ${{ steps.worktree.outputs.baseline-dir }}
+        BASELINE_BRANCH: ${{ steps.resolve.outputs.baseline-branch }}
+        COVERAGE_KIND: ${{ inputs.coverage-kind }}
+        REF: ${{ inputs.ref }}
+        COMMIT: ${{ github.sha }}
+        GIT_AUTHOR_NAME: "github-actions[bot]"
+        GIT_AUTHOR_EMAIL: "github-actions[bot]@users.noreply.github.com"
+        GIT_COMMITTER_NAME: "github-actions[bot]"
+        GIT_COMMITTER_EMAIL: "github-actions[bot]@users.noreply.github.com"
+      run: |
+        cd "$BASELINE_DIR"
+        git add --all
+        if git diff --cached --quiet; then
+          echo "::notice::No coverage changes to commit."
+          exit 0
         fi
+        git commit -m "chore: update ${COVERAGE_KIND} coverage for ${REF}@${COMMIT:0:12}"
+        git push origin "HEAD:refs/heads/${BASELINE_BRANCH}"

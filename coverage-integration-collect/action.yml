@@ -1,0 +1,83 @@
+name: "F´ Coverage — Integration Collect"
+description: >
+  Collect a gcovr JSON tracefile from a single deployment's integration
+  test run.  This action is intended to run in a matrix job — one per
+  deployment/reference.  The tracefile is later merged by
+  coverage-integration-aggregate to produce unified per-module reports.
+
+  Prerequisites (the calling workflow must have already):
+    1. Built the deployment with coverage flags
+       (e.g. -DCMAKE_CXX_FLAGS="--coverage" etc.)
+    2. Run integration tests so .gcda files are populated.
+inputs:
+  working-directory:
+    description: >
+      The fprime source root (directory containing Fw/, Svc/, Os/).
+      This MUST be the same path used across all matrix jobs and in the
+      aggregate step — it determines the relative source paths inside
+      the tracefile that make multi-deployment merging work.
+    required: false
+    default: "."
+  build-cache:
+    description: >
+      Path to the CMake build cache directory containing .gcno/.gcda files.
+      Relative to working-directory or absolute.
+    required: true
+  deployment-name:
+    description: >
+      A short slug identifying this deployment (e.g. 'Ref', 'MyDeploy').
+      Used to name the output tracefile artifact.
+    required: true
+  enable-fw-assert-branch-coverage:
+    description: >
+      When 'true', include FW_ASSERT branches in branch coverage.
+      By default FW_ASSERT branches are excluded.
+    required: false
+    default: "false"
+  debug:
+    description: "When 'true', pass -v to gcovr."
+    required: false
+    default: "false"
+outputs:
+  tracefile:
+    description: "Path to the generated gcovr JSON tracefile"
+    value: ${{ steps.collect.outputs.tracefile }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Collect integration tracefile"
+      id: collect
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        BUILD_CACHE: ${{ inputs.build-cache }}
+        DEPLOYMENT_NAME: ${{ inputs.deployment-name }}
+        ENABLE_FW_ASSERT: ${{ inputs.enable-fw-assert-branch-coverage }}
+        DEBUG: ${{ inputs.debug }}
+      run: |
+        set -euo pipefail
+
+        TRACEFILE="integration-trace-${DEPLOYMENT_NAME}.json"
+
+        FW_ASSERT_FLAGS=""
+        if [ "${ENABLE_FW_ASSERT}" != "true" ]; then
+          FW_ASSERT_FLAGS="--exclude-branches-by-pattern .*FW_ASSERT\(.*"
+        fi
+
+        DEBUG_FLAG=""
+        if [ "${DEBUG}" = "true" ]; then
+          DEBUG_FLAG="-v"
+        fi
+
+        echo "[collect] Generating tracefile for deployment: ${DEPLOYMENT_NAME}"
+        gcovr -r . "${BUILD_CACHE}" \
+          --json "${TRACEFILE}" \
+          --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+          --exclude-throw-branches \
+          --exclude-unreachable-branches \
+          ${FW_ASSERT_FLAGS} \
+          ${DEBUG_FLAG}
+
+        echo "[collect] Tracefile: ${TRACEFILE} ($(du -h "${TRACEFILE}" | cut -f1))"
+        echo "tracefile=$(pwd)/${TRACEFILE}" >> "$GITHUB_OUTPUT"

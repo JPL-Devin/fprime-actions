@@ -1,0 +1,127 @@
+name: "F´ Coverage — Integration (common)"
+description: >
+  Post-process integration test coverage for all F´ modules.
+
+  This action assumes the caller has already:
+    1. Built the deployment with coverage flags
+       (e.g. -DCMAKE_CXX_FLAGS="--coverage" -DCMAKE_C_FLAGS="--coverage"
+       -DCMAKE_EXE_LINKER_FLAGS="--coverage" passed through generate-args).
+    2. Run all integration test suites (potentially multiple pytest
+       invocations) so that .gcda files reflect the cumulative coverage
+       from every test.
+
+  The action then:
+    - Discovers F´ modules via register_fprime_module() in CMakeLists.txt.
+    - Runs gcovr globally against the build cache for headline numbers.
+    - Runs gcovr per-module with --filter <source-dir> to attribute
+      coverage to each component individually.
+
+  The resulting summary.json + HTML outputs live in the same working tree
+  layout as coverage-common so they can be fed to coverage-check (PR) or
+  coverage-update (push) with coverage-kind: integration.
+inputs:
+  working-directory:
+    description: "Top-level project root (contains CMakeLists.txt, Fw/, Svc/)"
+    required: false
+    default: "."
+  build-cache:
+    description: >
+      Path to the CMake build cache directory that contains .gcno and
+      .gcda files.  This is always required — the action does not
+      auto-detect the build cache.
+    required: true
+  strict:
+    description: >
+      When 'true', fail the action if any per-module gcovr invocation
+      fails.  Default 'false' so individual failures surface as missing
+      coverage in the catalog without stopping the whole CI job.
+    required: false
+    default: "false"
+  suffix:
+    description: >
+      Platform/variant suffix appended to the coverage kind slug.
+      For example 'linux' produces coverage-kind 'integration-linux' and
+      subdirectory 'coverage-integration-linux/'.  Use 'hil-arm' for
+      hardware-in-the-loop ARM, etc.  The calling workflow supplies
+      this to differentiate multiple integration coverage runs on the
+      same baseline branch.
+    required: false
+    default: "linux"
+  enable-fw-assert-branch-coverage:
+    description: >
+      When 'true', include FW_ASSERT branches in branch coverage.
+      By default FW_ASSERT branches are excluded because each
+      FW_ASSERT(cond) expands to a ternary whose error path is
+      virtually never tested, inflating uncovered-branch counts.
+    required: false
+    default: "false"
+  debug:
+    description: >
+      When 'true', pass -v to gcovr for verbose output.  Useful for
+      diagnosing coverage-instrumented builds and gcovr filter issues.
+    required: false
+    default: "false"
+outputs:
+  modules-jsonl:
+    description: "Path to the JSON-Lines file listing discovered modules"
+    value: ${{ steps.discover.outputs.modules-jsonl }}
+  coverage-kind:
+    description: "Resolved coverage kind slug (e.g. 'integration-linux', 'integration-hil-arm')"
+    value: ${{ steps.kind.outputs.coverage-kind }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Discover modules"
+      id: discover
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+      run: |
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > modules.jsonl
+        echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
+        echo "Discovered $(wc -l < modules.jsonl) modules"
+
+    - name: "Resolve coverage kind"
+      id: kind
+      shell: bash
+      env:
+        SUFFIX: ${{ inputs.suffix }}
+      run: |
+        if [ -n "$SUFFIX" ]; then
+          echo "coverage-kind=integration-${SUFFIX}" >> "$GITHUB_OUTPUT"
+        else
+          echo "coverage-kind=integration" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: "Post-process integration coverage"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        BUILD_CACHE: ${{ inputs.build-cache }}
+        STRICT: ${{ inputs.strict }}
+        ENABLE_FW_ASSERT: ${{ inputs.enable-fw-assert-branch-coverage }}
+        DEBUG: ${{ inputs.debug }}
+      run: |
+        STRICT_FLAG=""
+        if [ "${STRICT}" = "true" ]; then
+          STRICT_FLAG="--strict"
+        fi
+        FW_ASSERT_FLAG=""
+        if [ "${ENABLE_FW_ASSERT}" = "true" ]; then
+          FW_ASSERT_FLAG="--enable-fw-assert-branch-coverage"
+        fi
+        DEBUG_FLAG=""
+        if [ "${DEBUG}" = "true" ]; then
+          DEBUG_FLAG="--debug"
+        fi
+        python3 "${ACTION_PATH}/scripts/run_integration_coverage.py" \
+          --project-root . \
+          --build-cache "$BUILD_CACHE" \
+          --modules-jsonl "$MODULES_JSONL" \
+          ${STRICT_FLAG} \
+          ${FW_ASSERT_FLAG} \
+          ${DEBUG_FLAG}

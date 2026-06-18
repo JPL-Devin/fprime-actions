@@ -1,191 +1,137 @@
 #!/usr/bin/env python3
-"""F´ Soak Test Monitor: decode ComLogger .com files, alert on FATAL events,
-resource thresholds, and degradation trends. Exit 1 on any FATAL."""
+"""F´ Soak Test Monitor.
+
+Uses gdslog/comlog_parser.py to parse logs, stores raw events and telemetry
+in a Results struct, and during analyze() walks them and emits alerts.
+
+Channels we analyze:
+  SystemResources: MEMORY_USED (leak), NON_VOLATILE_FREE (depletion),
+                   CPU + CPU_NN (high / rising)
+  BufferManager:   CurrBuffs, HiBuffs (rising = buffer leak),
+                   NoBuffs, EmptyBuffs (any > 0 = allocation failure)
+"""
 
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from fprime_gds.common.handlers import DataHandler
-from fprime_gds.common.models.serialize.numerical_types import U16Type
-from fprime_gds.common.pipeline.standard import StandardPipeline
-from fprime_gds.common.utils.config_manager import ConfigManager
 from fprime_gds.executables.cli import ParserBase, StandardPipelineParser
 
-MIN_POINTS_FOR_TREND = 5         # need a few samples before a trend is meaningful
+from comlog_parser import process_com_logs
+from gdslog_parser import process_gds_logs
+
+MIN_POINTS_FOR_TREND = 10         # need a few samples before a trend is meaningful
 LEAK_GROWTH_PERCENT = 10.0       # resource grew by this much across the window -> alert
 DEPLETION_DROP_PERCENT = 50.0    # free resource dropped by this much -> alert
 HIGH_CPU_PERCENT = 90.0
-
-
-def _classify(name: str) -> str:
-    """Classify F' channel name (case-insensitive) for trend/threshold rules."""
-    n = name.lower()
-    if "memory_used" in n: return "memory_usage"
-    if "non_volatile_free" in n: return "free_storage"
-    if "memory_total" in n or "non_volatile_total" in n: return "baseline"
-    if n.endswith(".cpu") or ".cpu_" in n: return "cpu"
-    if any(k in n for k in ("hibuffs", "lobuffs", "nobuffs", "buffermanager")): return "buffer_pool"
-    if "queuedepth" in n: return "queue_depth"
-    return "other"
-
-
-def _to_float(val):
-    if isinstance(val, bool): return None
-    if isinstance(val, (int, float)): return float(val)
-    try: return float(str(val).replace(",", ""))
-    except (TypeError, ValueError): return None
-
+ALERT_SEVERITIES = ("FATAL", "WARNING_HI", "WARNING_LO")
 
 class Results:
+    """Raw store of decoded events and telemetry samples. analyze() fills in
+    self.alerts and self.trends from self.events and self.channels"""
+
     def __init__(self):
-        self.values: Dict[str, List[float]] = {}        # channel -> samples
-        self.last_ts: Dict[str, str] = {}               # channel -> last timestamp
-        self.alerts: List[Tuple[str, str, str]] = []    # (severity, message, ts)
-        self.trends: List[dict] = []
-        self.events = 0
-        self.channels = 0
+        self.channels: Dict[str, List[Tuple[float, str]]] = {}      # name -> [(value, ts)]
+        self.events: List[Tuple[str, str, str, str]] = []           # [(severity, name, body, ts)]
+        self.alerts: List[Tuple[str, str, str]] = []                # [(severity, msg, ts)]
+        self.trends: List[str] = []                                # one summary line per analyzed series
 
-    def alert(self, severity: str, msg: str, ts: str = ""):
-        self.alerts.append((severity, msg, ts))
+    def add_event(self, name: str, severity: str, body: str, ts: str = ""):
+        self.events.append((severity.removeprefix("EventSeverity."), name, body, ts))
 
-    def add_event(self, ev):
-        self.events += 1
-        sev = str(ev.template.severity)
-        ts = str(getattr(ev, "time", ""))
-        body = f"{ev.template.name}: {getattr(ev, 'args', '')}"
-        if sev == "EventSeverity.FATAL":
-            self.alert("FATAL", body, ts)
-        elif sev == "EventSeverity.WARNING_HI":
-            self.alert("WARNING_HI", body, ts)
-        elif sev == "EventSeverity.WARNING_LO":
-            self.alert("WARNING_LO", body, ts)
+    def add_channel(self, name: str, value: float, ts: str = ""):
+        self.channels.setdefault(name, []).append((value, ts))
 
-    def add_channel(self, ch):
-        self.channels += 1
-        value = _to_float(ch.get_val())
-        if value is None:
-            return
-        name = ch.template.name
-        ts = str(getattr(ch, "time", ""))
-        self.values.setdefault(name, []).append(value)
-        self.last_ts[name] = ts
-        kind = _classify(name)
-        if kind == "buffer_pool" and value == 0:
-            self.alert("WARNING_HI", f"Buffer pool exhausted: {name} = 0", ts)
-        elif kind == "cpu" and value > HIGH_CPU_PERCENT:
-            self.alert("WARNING_LO", f"High CPU usage: {name} = {value:g}%", ts)
+    def analyze(self):
+        for severity, event_name, body, timestamp in self.events:
+            if severity in ALERT_SEVERITIES:
+                self.alerts.append((severity, f"{event_name}: {body}", timestamp))
 
-    def analyze_trends(self):
-        for name, vals in self.values.items():
-            if len(vals) < MIN_POINTS_FOR_TREND:
+        for channel_name, samples in self.channels.items():
+            suffix = channel_name.rsplit(".", 1)[-1]
+            is_cpu = suffix.startswith("CPU")
+            values = [value for value, ts in samples]
+
+            # Per-sample threshold checks
+            for value, timestamp in samples:
+                if is_cpu and value > HIGH_CPU_PERCENT:
+                    self.alerts.append(("WARNING_LO",
+                        f"High CPU usage: {channel_name} = {value:g}%", timestamp))
+                elif suffix == "NoBuffs" and value > 0:
+                    self.alerts.append(("WARNING_HI",
+                        f"Buffer allocation failure: {channel_name} = {value:g}", timestamp))
+                elif suffix == "EmptyBuffs" and value > 0:
+                    self.alerts.append(("WARNING_HI",
+                        f"Empty buffer returned: {channel_name} = {value:g}", timestamp))
+
+            # Per-series trend check
+            if len(values) < MIN_POINTS_FOR_TREND:
                 continue
-            first, last = vals[0], vals[-1]
-            denom = abs(first) or abs(last) or 1.0
-            pct = (last - first) / denom * 100.0
-            self.trends.append({"name": name, "n": len(vals), "first": first,
-                                "last": last, "min": min(vals), "max": max(vals), "pct": pct})
-            kind = _classify(name)
-            ts = self.last_ts[name]
-            base = f"{name}: {first:g} -> {last:g} ({pct:+.1f}% over {len(vals)} samples)"
-            if kind == "memory_usage" and pct >= LEAK_GROWTH_PERCENT:
-                self.alert("WARNING_LO", f"Possible memory leak: {base}", ts)
-            elif kind in ("free_storage", "buffer_pool") and pct <= -DEPLETION_DROP_PERCENT:
-                self.alert("WARNING_HI", f"Possible resource depletion: {base}", ts)
-            elif kind == "cpu" and pct >= LEAK_GROWTH_PERCENT:
-                self.alert("WARNING_LO", f"Rising CPU trend: {base}", ts)
-            elif kind == "queue_depth" and pct >= LEAK_GROWTH_PERCENT:
-                self.alert("WARNING_HI", f"Rising queue depth: {base}", ts)
+            first, last = values[0], values[-1]
+            percent_change = (last - first) / (abs(first) or abs(last) or 1.0) * 100.0
+            last_timestamp = samples[-1][1]
+            summary = (f"{channel_name}: {first:g} -> {last:g} "
+                       f"({percent_change:+.1f}% over {len(values)} samples)")
+            self.trends.append(summary)
 
+            if suffix == "MEMORY_USED" and percent_change >= LEAK_GROWTH_PERCENT:
+                self.alerts.append(("WARNING_LO", f"Possible memory leak: {summary}", last_timestamp))
+            elif suffix == "NON_VOLATILE_FREE" and percent_change <= -DEPLETION_DROP_PERCENT:
+                self.alerts.append(("WARNING_HI", f"Possible storage depletion: {summary}", last_timestamp))
+            elif is_cpu and percent_change >= LEAK_GROWTH_PERCENT:
+                self.alerts.append(("WARNING_LO", f"Rising CPU trend: {summary}", last_timestamp))
+            elif suffix in ("CurrBuffs", "HiBuffs") and percent_change >= LEAK_GROWTH_PERCENT:
+                self.alerts.append(("WARNING_HI", f"Possible buffer leak: {summary}", last_timestamp))
 
-class _Handler(DataHandler):
-    """Adapter that routes the GDS DataHandler callback to a plain function.
-    Wraps each call in try/except so a malformed record never aborts the run."""
-    def __init__(self, fn):
-        self.fn = fn
-    def data_callback(self, data, sender=None):
-        try: self.fn(data)
-        except Exception: pass
+def _print_summary(results: Results):
+    total_samples = sum(len(samples) for samples in results.channels.values())
+    print("")
+    print(f"Events Decoded:           {len(results.events)}")
+    print(f"Channel Samples Decoded:  {total_samples}")
+    print(f"Numeric Channels Tracked: {len(results.channels)}")
+    print(f"Alerts:                   {len(results.alerts)}")
 
+    if results.alerts:
+        print("")
+        print("ALERTS:")
+        for severity, message, timestamp in results.alerts:
+            print(f" {severity} - {message}" + (f" [{timestamp}]" if timestamp else ""))
 
-def process_logs(pipeline, com_logs: Path, results: Results):
-    files = sorted(com_logs.glob("**/*.com"))
-    if not files:
-        # Deployments without Svc::ComLogger leave this dir empty 
-        print(f"No ComLogger .com files at {com_logs}; skipping log analysis.")
-        return
-    print(f"Processing {len(files)} ComLogger .com file(s) from {com_logs}")
-    pipeline.coders.register_event_consumer(_Handler(results.add_event))
-    pipeline.coders.register_channel_consumer(_Handler(results.add_channel))
-    for f in files:
-        try:
-            data = f.read_bytes()
-            if data:
-                pipeline.distributor.on_recv(data)
-        except Exception as exc:
-            print(f"Error processing {f}: {exc}")
-
+    if results.trends:
+        print("")
+        print("TREND ANALYSIS:")
+        for trend in results.trends:
+            print(f" {trend}")
 
 class SoakArgs(ParserBase):
     DESCRIPTION = "F´ Soak Test Monitor"
     def get_arguments(self):
-        return {("--com-logs",): {"type": Path, "required": True,
-                "help": "Directory of Svc::ComLogger .com files (may be empty)."}}
+        return {
+            ("--com-logs",): {"type": Path, "default": None,
+                "help": "Directory of Svc::ComLogger .com files (may be empty)."},
+            ("--gds-logs",): {"type": Path, "default": None,
+                "help": "Directory of GDS session logs containing channel.log/event.log "
+                        "(e.g. <deployment>/logs). Preferred when both sources are given."},
+        }
     def handle_arguments(self, args, **_):
+        if args.com_logs is None and args.gds_logs is None:
+            raise SystemExit("error: at least one of --com-logs or --gds-logs is required")
         return args
-
-
-def make_pipeline(args, config) -> StandardPipeline:
-    """Stand up a StandardPipeline configured to decode ComLogger records.
-    setup() launches transport/file-uplink threads; we feed data manually via
-    distributor.on_recv(), so disconnect() afterwards lets the process exit."""
-    p = StandardPipeline()
-    p.transport_implementation = args.connection_transport
-    try:
-        p.setup(config=config, dictionaries=args.dictionaries,
-                file_store=args.files_storage_directory,
-                logging_prefix=args.logs, data_logging_enabled=False)
-    finally:
-        try:
-            p.disconnect()
-        except Exception:
-            pass
-    return p
-
 
 def main():
     args, _ = ParserBase.parse_args([StandardPipelineParser, SoakArgs])
-    # Svc::ComLogger frames each Fw::ComBuffer with no key and a U16 length
-    config = ConfigManager()
-    config.set_config("use_key", False)
-    config.set_config("msg_len", U16Type)
-    pipeline = make_pipeline(args, config)
-
     results = Results()
-    process_logs(pipeline, args.com_logs, results)
-    results.analyze_trends()
 
-    print("")
-    print(f"Events Decoded:           {results.events}")
-    print(f"Channel Samples Decoded:  {results.channels}")
-    print(f"Numeric Channels Tracked: {len(results.values)}")
-    print(f"Alerts:                   {len(results.alerts)}")
+    # Prefer GDS text logs, use ComLogger otherwise
+    gds_rows = process_gds_logs(args.gds_logs, results)
+    if gds_rows == 0 and args.com_logs is not None:
+        process_com_logs(args, args.com_logs, results)
+    elif gds_rows > 0 and args.com_logs is not None:
+        print("GDS logs supplied analysis, skipping ComLogger parsing.")
 
-    if results.alerts:
-        print("\nALERTS:")
-        for sev, msg, ts in results.alerts:
-            print(f" {sev} - {msg}{f' [{ts}]' if ts else ''}")
-
-    if results.trends:
-        print("\nTREND ANALYSIS:")
-        for t in sorted(results.trends, key=lambda x: abs(x["pct"]), reverse=True):
-            arrow = "^" if t["pct"] > 0 else ("v" if t["pct"] < 0 else "-")
-            print(f" {arrow} {t['name']}: {t['first']:g} -> {t['last']:g} "
-                  f"({t['pct']:+.1f}% over {t['n']} samples, "
-                  f"min={t['min']:g}, max={t['max']:g})")
-
-    sys.exit(1 if any(a[0] == "FATAL" for a in results.alerts) else 0)
-
+    results.analyze()
+    _print_summary(results)
+    sys.exit(1 if any(alert[0] == "FATAL" for alert in results.alerts) else 0)
 
 if __name__ == "__main__":
     main()

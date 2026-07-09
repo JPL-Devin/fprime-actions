@@ -9,6 +9,10 @@ inputs:
     description: "Default branch to use if no PR branch found"
     required: false
     default: "devel"
+  pr-branch-only:
+    description: "If 'true', only upgrade when a matching pr-<number> branch exists; otherwise leave the pinned version installed (never fall back to the default branch)"
+    required: false
+    default: "false"
 
 outputs:
   target-branch:
@@ -27,5 +31,14 @@ runs:
 
     - name: "Upgrade package"
       shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        TARGET_BRANCH: ${{ steps.get_pr_branch.outputs.target-branch }}
+        MATCH_TYPE: ${{ steps.get_pr_branch.outputs.match-type }}
+        PR_BRANCH_ONLY: ${{ inputs.pr-branch-only }}
       run: |
-        pip install --upgrade "git+https://github.com/${{ inputs.repository }}.git@${{ steps.get_pr_branch.outputs.target-branch }}"
+        if [[ "${PR_BRANCH_ONLY}" == "true" && "${MATCH_TYPE}" != "pr" ]]; then
+          echo "No matching pr branch on ${REPOSITORY}; keeping the pinned version (not upgrading to '${TARGET_BRANCH}')"
+          exit 0
+        fi
+        pip install --upgrade "git+https://github.com/${REPOSITORY}.git@${TARGET_BRANCH}"

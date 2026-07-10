@@ -1,0 +1,139 @@
+name: "F´ Timing (check)"
+description: >
+  Compare the current workflow run's per-job durations against a
+  baseline built from recent successful runs of the same workflow on a
+  baseline branch (typically the default branch), and flag jobs that
+  run significantly longer than normal.
+
+  Intended to run as a final job that "needs" all other jobs in the
+  workflow (use "if: always()" so it still runs when a job fails).  The
+  job running this action is excluded from the comparison automatically
+  since it is still in progress.
+
+  Baselines are the per-job median of execution time (started_at to
+  completed_at, so queue time is excluded) over recent successful runs.
+  A job is flagged when its duration exceeds all of:
+  median * threshold-ratio, median + mad-multiplier * MAD, and
+  median + min-slowdown-seconds.  Defaults to warn-only annotations; set
+  fail-on-regression to enforce.  Requires "permissions: actions: read".
+inputs:
+  github-token:
+    description: "Token used to query the Actions API (needs actions: read)"
+    required: false
+    default: ${{ github.token }}
+  baseline-branch:
+    description: "Branch whose recent runs form the baseline"
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+  baseline-runs:
+    description: "Maximum number of recent successful runs to sample"
+    required: false
+    default: "20"
+  min-samples:
+    description: "Minimum baseline samples required before a job is compared"
+    required: false
+    default: "3"
+  threshold-ratio:
+    description: "Flag a job when current > median * this ratio"
+    required: false
+    default: "1.5"
+  mad-multiplier:
+    description: "Also require current > median + this many MADs"
+    required: false
+    default: "3.0"
+  min-slowdown-seconds:
+    description: "Also require the absolute slowdown to exceed this many seconds"
+    required: false
+    default: "60"
+  skip-jobs:
+    description: "Newline-separated job names to exclude from comparison"
+    required: false
+    default: ""
+  fail-on-regression:
+    description: "If true, fail this job when any job regresses"
+    required: false
+    default: "false"
+  comment-marker:
+    description: "Hidden HTML marker embedded in the markdown report"
+    required: false
+    default: "<!-- fprime-timing-check -->"
+
+outputs:
+  report-path:
+    description: "Absolute path to the markdown timing report"
+    value: ${{ steps.compare.outputs.report-path }}
+  regressions-json-path:
+    description: "Absolute path to a JSON list of regressed jobs"
+    value: ${{ steps.compare.outputs.regressions-json-path }}
+  regressed:
+    description: "'true' if any job exceeded its timing limit"
+    value: ${{ steps.compare.outputs.regressed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Compare job timings against baseline"
+      id: compare
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCRIPT: ${{ github.action_path }}/scripts/timing_check.py
+        REPO: ${{ github.repository }}
+        API_URL: ${{ github.api_url }}
+        RUN_ID: ${{ github.run_id }}
+        CURRENT_JOB: ${{ github.job }}
+        BASELINE_BRANCH: ${{ inputs.baseline-branch }}
+        BASELINE_RUNS: ${{ inputs.baseline-runs }}
+        MIN_SAMPLES: ${{ inputs.min-samples }}
+        THRESHOLD_RATIO: ${{ inputs.threshold-ratio }}
+        MAD_MULTIPLIER: ${{ inputs.mad-multiplier }}
+        MIN_SLOWDOWN_SECONDS: ${{ inputs.min-slowdown-seconds }}
+        SKIP_JOBS: ${{ inputs.skip-jobs }}
+        FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        MARKER: ${{ inputs.comment-marker }}
+      run: |
+        OUT_DIR="${RUNNER_TEMP:-/tmp}/fprime-timing-out"
+        mkdir -p "$OUT_DIR"
+        REPORT_PATH="$OUT_DIR/report.md"
+        REGRESSIONS_PATH="$OUT_DIR/regressions.json"
+        SKIP_FLAGS=()
+        # The job running this action is still in progress; exclude it.
+        SKIP_FLAGS+=(--skip-job "$CURRENT_JOB")
+        while IFS= read -r NAME; do
+          [ -n "$NAME" ] && SKIP_FLAGS+=(--skip-job "$NAME")
+        done <<< "$SKIP_JOBS"
+        FAIL_FLAG=()
+        if [ "$FAIL_ON_REGRESSION" = "true" ]; then
+          FAIL_FLAG+=(--fail-on-regression)
+        fi
+        EXIT=0
+        python3 "$SCRIPT" \
+          --repo "$REPO" \
+          --api-url "$API_URL" \
+          --run-id "$RUN_ID" \
+          --baseline-branch "$BASELINE_BRANCH" \
+          --baseline-runs "$BASELINE_RUNS" \
+          --min-samples "$MIN_SAMPLES" \
+          --threshold-ratio "$THRESHOLD_RATIO" \
+          --mad-multiplier "$MAD_MULTIPLIER" \
+          --min-slowdown-seconds "$MIN_SLOWDOWN_SECONDS" \
+          --comment-marker "$MARKER" \
+          --output "$REPORT_PATH" \
+          --regressions-output "$REGRESSIONS_PATH" \
+          "${SKIP_FLAGS[@]}" "${FAIL_FLAG[@]}" || EXIT=$?
+        echo "report-path=$REPORT_PATH" >> "$GITHUB_OUTPUT"
+        echo "regressions-json-path=$REGRESSIONS_PATH" >> "$GITHUB_OUTPUT"
+        if [ -s "$REGRESSIONS_PATH" ] && [ "$(cat "$REGRESSIONS_PATH")" != "[]" ]; then
+          echo "regressed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "regressed=false" >> "$GITHUB_OUTPUT"
+        fi
+        exit "$EXIT"
+
+    - name: "Write report to step summary"
+      if: always() && steps.compare.outputs.report-path != ''
+      shell: bash
+      env:
+        REPORT_PATH: ${{ steps.compare.outputs.report-path }}
+      run: |
+        cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"

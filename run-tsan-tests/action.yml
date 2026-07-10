@@ -1,0 +1,87 @@
+name: "F Prime TSan Unit Tests"
+description: "Generate and run F Prime unit tests with ThreadSanitizer enabled (and other sanitizers disabled)"
+inputs:
+  working-directory:
+    description: "Directory to run fprime-util from"
+    required: false
+    default: "."
+  generate-args:
+    description: "Extra flags passed to fprime-util generate --ut (in addition to the TSan flags)"
+    required: false
+    default: ""
+  target-platform:
+    description: "Target platform/toolchain passed to fprime-util (e.g. native, aarch64-linux)"
+    required: false
+    default: ""
+  jobs:
+    description: "Parallel job count: a number, 'random' (1-32), or empty to omit -j"
+    required: false
+    default: ""
+  tsan-options:
+    description: "TSAN_OPTIONS environment variable value"
+    required: false
+    default: "halt_on_error=1 history_size=5"
+  check-timeout:
+    description: "Timeout in seconds passed to ctest via --pass-through --timeout"
+    required: false
+    default: "600"
+  check-targets:
+    description: "Space-separated list of test target names to run (e.g. 'LocklessPriorityQueueTsanTest OtherTest'). Joined with | into a ctest -R regex. Empty runs all tests."
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: "Generate UT Build Cache (TSan)"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        GENERATE_ARGS: ${{ inputs.generate-args }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+      run: |
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        fprime-util generate --ut ${VERBOSE_FLAG} \
+          -DENABLE_SANITIZER_THREAD=ON \
+          -DENABLE_SANITIZER_ADDRESS=OFF \
+          -DENABLE_SANITIZER_LEAK=OFF \
+          -DENABLE_SANITIZER_UNDEFINED_BEHAVIOR=OFF \
+          -DFPRIME_ENABLE_UT_COVERAGE=OFF \
+          ${GENERATE_ARGS} ${TARGET_PLATFORM}
+    - name: "Check Unit Tests (TSan)"
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        CTEST_OUTPUT_ON_FAILURE: "1"
+        TSAN_OPTIONS: ${{ inputs.tsan-options }}
+        JOBS_INPUT: ${{ inputs.jobs }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+        CHECK_TIMEOUT: ${{ inputs.check-timeout }}
+        CHECK_TARGETS: ${{ inputs.check-targets }}
+      run: |
+        JOBS_FLAG=""
+        if [ "${JOBS_INPUT}" = "random" ]; then
+          JOBS=$(( (RANDOM % 32) + 1 ))
+          JOBS_FLAG="-j${JOBS}"
+          echo "Running UTs with ${JOBS} parallel jobs (randomized 1-32)"
+        elif [ -n "${JOBS_INPUT}" ]; then
+          JOBS_FLAG="-j${JOBS_INPUT}"
+          echo "Running UTs with ${JOBS_INPUT} parallel jobs"
+        else
+          echo "Running UTs with default parallelism"
+        fi
+        if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
+          VERBOSE_FLAG=--verbose
+        else
+          VERBOSE_FLAG=
+        fi
+        FILTER_FLAG=""
+        if [ -n "${CHECK_TARGETS}" ]; then
+          REGEX=$(echo "${CHECK_TARGETS}" | tr ' ' '|')
+          FILTER_FLAG="-R ${REGEX}"
+          echo "Filtering to tests matching: ${REGEX}"
+        fi
+        fprime-util check --all ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM} --pass-through --output-on-failure --timeout ${CHECK_TIMEOUT} ${FILTER_FLAG}

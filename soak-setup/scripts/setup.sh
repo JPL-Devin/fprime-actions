@@ -1,35 +1,56 @@
 #!/usr/bin/env bash
 #
-# Soak setup: copy the build artifacts into $HOME/fprime-soak and build the
-# soak virtualenv.
-#
-# Expected artifact layout (staged by the calling workflow into ./artifacts/):
-#   artifacts/build-artifacts/<arch>/<deployment>/bin/<binary>
-#   artifacts/build-artifacts/<arch>/<deployment>/dict/*TopologyDictionary.json
-#   artifacts/int/
-#   artifacts/fprime-gds.yml        
+# Soak setup: stage build artifacts into $HOME/fprime-soak-<deployment>,
+# build the soak virtualenv, and start the persistent GDS service.
 
 set -euo pipefail
 
-INSTALL_DIR="${HOME}/fprime-soak"
+PLATFORM="${PLATFORM}"
+INSTALL_DIR="${HOME}/fprime-soak-${DEPLOYMENT_NAME}"
 TEMPLATES="${ACTION_PATH}/templates"
+SERVICE_NAME="fprime-soak-gds-${DEPLOYMENT_NAME}"
+ZMQ_TRANSPORT="--zmq-transport ipc:///tmp/fprime-server-${DEPLOYMENT_NAME}-in ipc:///tmp/fprime-server-${DEPLOYMENT_NAME}-out"
 
-render() {
-  sed -e "s#__INSTALL_DIR__#${INSTALL_DIR}#g" \
-      -e "s#__SERVICE_USER__#$(whoami)#g" \
-      -e "s#__GDS_ARGS__#${GDS_ARGS}#g" \
-      -e "s#__DICT_PATH__#${DICT_PATH}#g" "$1"
-}
+# Delete previous soak install directory
+rm -rf "${INSTALL_DIR}"
 
-# Delete anything that was there
-rm -rf "${INSTALL_DIR}" 
 mkdir -p "${INSTALL_DIR}"/{bin,dict,gds-logs,ComLoggerFiles,test}
+echo "# SOAK STARTED $(date +%Y-%m-%dT%H:%M:%S)" > "${INSTALL_DIR}/soak.log"
 
-cp artifacts/build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
-cp artifacts/fprime-gds.yml "${INSTALL_DIR}/fprime-gds.yml"
-cp -r artifacts/int/. "${INSTALL_DIR}/test/"
-cp artifacts/build-artifacts/*/*/bin/* "${INSTALL_DIR}/bin/fsw"
-chmod +x "${INSTALL_DIR}/bin/fsw"
+case "${PLATFORM}" in
+  linux)
+    echo "[INFO] Staging Linux artifacts"
+    cp artifacts/build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
+    cp artifacts/fprime-gds.yml "${INSTALL_DIR}/fprime-gds.yml" 2>/dev/null || true
+    cp -r artifacts/int/. "${INSTALL_DIR}/test/"
+    cp artifacts/build-artifacts/*/*/bin/* "${INSTALL_DIR}/bin/fsw"
+    chmod +x "${INSTALL_DIR}/bin/fsw"
+    GDS_ARGS="${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
+    ;;
+  linux-remote)
+    echo "[INFO] Staging Linux artifacts"
+    cp artifacts/build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
+    cp artifacts/fprime-gds.yml "${INSTALL_DIR}/fprime-gds.yml" 2>/dev/null || true
+    cp -r artifacts/int/. "${INSTALL_DIR}/test/"
+    cp artifacts/build-artifacts/*/*/bin/* "${INSTALL_DIR}/bin/fsw"
+    chmod +x "${INSTALL_DIR}/bin/fsw"
+    GDS_ARGS="--communication-selection ip --ip-address ${FSW_IP} --ip-port ${FSW_PORT:-50000} --ip-client ${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
+    ;;
+  pico2)
+    # fprime-ci archives ./build-artifacts (plus dictionary/executable/test-scripts
+    # by basename) into archive.tar.gz. 
+    echo "[INFO] Staging Pico 2 artifacts from fprime-ci build"
+    echo "[INFO] Extracting archive.tar.gz"
+    tar -xzf ./archive.tar.gz
+    cp ./build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
+    cp -r ./*/*/test/int/. "${INSTALL_DIR}/test/" 2>/dev/null || true
+    GDS_ARGS="--communication-selection uart --uart-device ${FSW_DEVICE:-/dev/pico2} --uart-baud 115200 --uart-skip-port-check ${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
+    ;;
+  *)
+    echo "::error::Unknown platform: ${PLATFORM}"
+    exit 1
+    ;;
+esac
 
 DICT_PATH=$(ls "${INSTALL_DIR}/dict/"*TopologyDictionary.json | head -n 1)
 
@@ -38,17 +59,23 @@ python3 -m venv "${INSTALL_DIR}/venv"
 
 echo "[INFO] Soak Setup Complete: ${INSTALL_DIR}"
 
-# Setup and start GDS service
-sudo systemctl disable --now "fprime-soak-gds" 2>/dev/null || true
-render "${TEMPLATES}/gds.service.template" \
-| sudo tee "/etc/systemd/system/fprime-soak-gds.service" >/dev/null
+sudo systemctl disable --now "${SERVICE_NAME}" 2>/dev/null || true
+sed -e "s#__INSTALL_DIR__#${INSTALL_DIR}#g" \
+    -e "s#__SERVICE_USER__#$(whoami)#g" \
+    -e "s#__GDS_ARGS__#${GDS_ARGS}#g" \
+    -e "s#__DICT_PATH__#${DICT_PATH}#g" \
+    "${TEMPLATES}/gds.service.template" \
+  | sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now fprime-soak-gds
+sudo systemctl enable --now "${SERVICE_NAME}"
 
-# Verify GDS service started
-sudo systemctl is-active --quiet "fprime-soak-gds" && { echo "[INFO] fprime-soak-gds is active"; exit 0; }
-echo "::error::fprime-soak-gds failed to start"
-sudo systemctl status "fprime-soak-gds" --no-pager -l || true
-sudo journalctl -u "fprime-soak-gds" --no-pager -n 40 || true
+if sudo systemctl is-active --quiet "${SERVICE_NAME}"; then
+  echo "[INFO] ${SERVICE_NAME} is active"
+  exit 0
+fi
+
+echo "::error::${SERVICE_NAME} failed to start"
+sudo systemctl status "${SERVICE_NAME}" --no-pager -l || true
+sudo journalctl -u "${SERVICE_NAME}" --no-pager -n 40 || true
 exit 1

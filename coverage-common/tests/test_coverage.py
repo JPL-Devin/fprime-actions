@@ -31,11 +31,11 @@ import catalog  # noqa: E402
 from _summary import Summary, load_summary  # noqa: E402
 
 
-def _make_module(root: Path, path: str, *, with_ut: bool = True) -> Path:
+def _make_module(root: Path, path: str, *, with_ut: bool = True, register: str = "register_fprime_module") -> Path:
     """Create a fake F´ module dir with a CMakeLists.txt that triggers discovery."""
     mod_dir = root / path
     mod_dir.mkdir(parents=True, exist_ok=True)
-    body = ["set(SOURCE_FILES foo.cpp)", "register_fprime_module()"]
+    body = ["set(SOURCE_FILES foo.cpp)", f"{register}()"]
     if with_ut:
         body.append("register_fprime_ut()")
     (mod_dir / "CMakeLists.txt").write_text("\n".join(body) + "\n", encoding="utf-8")
@@ -85,6 +85,18 @@ def test_discover_finds_modules_and_ut_flag():
         assert ("Svc/CmdDispatcher", True) in result, result
         assert ("Fw/Cmd", True) in result, result
         assert not any(p.startswith("Decoy") for p, _ in result), result
+
+
+def test_discover_finds_library_modules():
+    # Modules registered via register_fprime_library (e.g. Utils/Hash) count too.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _make_module(root, "Utils/Hash", with_ut=True, register="register_fprime_library")
+        _make_module(root, "Some/Lib", with_ut=False, register="register_fprime_library")
+
+        result = sorted(discover.discover(root))
+        assert ("Utils/Hash", True) in result, result
+        assert ("Some/Lib", False) in result, result
 
 
 def test_discover_ignores_commented_out_calls():
@@ -377,6 +389,7 @@ def test_compare_baseline_missing_reports_no_baseline():
 
 TESTS = [
     test_discover_finds_modules_and_ut_flag,
+    test_discover_finds_library_modules,
     test_discover_ignores_commented_out_calls,
     test_summary_load_handles_missing_file_and_zero_total,
     test_summary_load_parses_gcovr_json,

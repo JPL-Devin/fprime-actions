@@ -15,6 +15,11 @@ inputs:
     required: false
     type: string
     default: "devel"
+  overlay_location:
+    description: "Relative path in the external project where the current repository is overlaid. Defaults to fprime_location (overlaying F´ itself)."
+    required: false
+    type: string
+    default: ""
   stage: 
     description: "Stage of the CI process"
     required: false
@@ -31,11 +36,11 @@ runs:
         ref: ${{ inputs.target_ref }}
         fetch-tags: true
         persist-credentials: false
-    - name: "Overlay current F´ revision"
+    - name: "Overlay current repository revision"
       uses: actions/checkout@v5
       with:
         submodules: recursive
-        path: ${{ inputs.fprime_location }}
+        path: ${{ inputs.overlay_location != '' && inputs.overlay_location || inputs.fprime_location }}
         fetch-tags: true
         persist-credentials: false
     - name: "Base Python"

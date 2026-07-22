@@ -1,7 +1,8 @@
 """Discover F´ modules under a working directory.
 
 A module is any directory whose CMakeLists.txt contains a call to
-``register_fprime_module(`` (with arbitrary whitespace).  A module is
+``register_fprime_module(`` or ``register_fprime_library(`` (with
+arbitrary whitespace).  A module is
 considered to have unit tests when the same CMakeLists.txt also contains
 ``register_fprime_ut(``.
 
@@ -19,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-MODULE_RE = re.compile(r"^\s*register_fprime_module\s*\(", re.MULTILINE)
+MODULE_RE = re.compile(r"^\s*register_fprime_(module|library)\s*\(", re.MULTILINE)
 UT_RE = re.compile(r"^\s*register_fprime_ut\s*\(", re.MULTILINE)
 
 

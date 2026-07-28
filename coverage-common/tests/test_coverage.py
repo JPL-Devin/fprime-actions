@@ -30,6 +30,7 @@ import mirror  # noqa: E402
 import catalog  # noqa: E402
 import codeql_findings  # noqa: E402
 from _summary import Summary, load_summary  # noqa: E402
+from _config import coverage_thresholds, load_config  # noqa: E402
 from _tiers import CoverageThresholds, codeql_tier, coverage_tier, normalize_severity  # noqa: E402
 
 
@@ -253,6 +254,41 @@ def test_tier_computation():
     assert normalize_severity("", 9.1) == "error"
     assert normalize_severity("note", 5.0) == "medium"
     assert normalize_severity("error", 2.0) == "low"
+
+
+def test_config_loading():
+    # Missing file / None -> defaults
+    assert coverage_thresholds(load_config(None)) == CoverageThresholds()
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "nope.yml"
+        assert coverage_thresholds(load_config(missing)) == CoverageThresholds()
+
+        cfg = Path(tmp) / "module-checklist.yml"
+        cfg.write_text(
+            "coverage:\n  tiers:\n    platinum: 99\n    gold: 88\n"
+            "future_section:\n  ignored: true\n",
+            encoding="utf-8",
+        )
+        thresholds = coverage_thresholds(load_config(cfg))
+        assert thresholds.platinum == 99.0
+        assert thresholds.gold == 88.0
+        assert thresholds.silver == 80.0  # default retained
+
+        # Non-numeric value falls back to the default with a warning
+        cfg.write_text(
+            "coverage:\n  tiers:\n    platinum: high\n", encoding="utf-8"
+        )
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            thresholds = coverage_thresholds(load_config(cfg))
+        assert thresholds.platinum == 95.0
+        assert "not a number" in buf.getvalue()
+
+        # Unparseable file -> defaults with a warning
+        cfg.write_text("::: not yaml : [", encoding="utf-8")
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            assert coverage_thresholds(load_config(cfg)) == CoverageThresholds()
 
 
 def test_catalog_groups_and_rollup():
@@ -643,6 +679,7 @@ TESTS = [
     test_mirror_flatten_drops_coverage_subdir,
     test_mirror_module_is_idempotent,
     test_tier_computation,
+    test_config_loading,
     test_catalog_groups_and_rollup,
     test_codeql_findings_per_module_pages_and_summaries,
     test_codeql_findings_idempotent_rerun_clears_stale,

@@ -21,18 +21,13 @@ inputs:
     description: "Subdirectory under each module in the baseline branch holding CodeQL findings"
     required: false
     default: "codeql"
-  tier-platinum:
-    description: "Line-coverage percent required for the platinum badge tier (checklist regeneration)"
+  config-file:
+    description: >
+      Path (relative to working-directory) of the checklist config file
+      holding badge-tier thresholds and future reporting settings.
+      Defaults apply when the file does not exist.
     required: false
-    default: "95"
-  tier-gold:
-    description: "Line-coverage percent required for the gold badge tier (checklist regeneration)"
-    required: false
-    default: "90"
-  tier-silver:
-    description: "Line-coverage percent required for the silver badge tier (checklist regeneration)"
-    required: false
-    default: "80"
+    default: ".github/module-checklist.yml"
 
 outputs:
   baseline-branch:
@@ -69,9 +64,7 @@ runs:
         SARIF_FILES: ${{ inputs.sarif-files }}
         COMMIT_SHA: ${{ github.sha }}
         REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-        TIER_PLATINUM: ${{ inputs.tier-platinum }}
-        TIER_GOLD: ${{ inputs.tier-gold }}
-        TIER_SILVER: ${{ inputs.tier-silver }}
+        CONFIG_FILE: ${{ inputs.config-file }}
       run: |
         set -e
         BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
@@ -86,6 +79,11 @@ runs:
           [ -n "$f" ] && SARIF_ARGS="$SARIF_ARGS --sarif $f"
         done <<< "$SARIF_FILES"
         export SARIF_ARGS
+
+        # Resolve the config path against the source checkout so it is still
+        # found when the mirror command runs against the baseline worktree.
+        CONFIG_ABS="$(pwd)/${CONFIG_FILE}"
+        export CONFIG_ABS
 
         bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
           "$BASELINE_BRANCH" "$COMMIT_SHA" "codeql" \
@@ -104,6 +102,4 @@ runs:
             --ref "$REF_NAME" \
             --ref-type "$REF_TYPE" \
             --commit "$COMMIT_SHA" \
-            --tier-platinum "$TIER_PLATINUM" \
-            --tier-gold "$TIER_GOLD" \
-            --tier-silver "$TIER_SILVER"'
+            --config "$CONFIG_ABS"'

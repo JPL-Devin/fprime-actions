@@ -164,9 +164,8 @@ def main(argv=None) -> int:
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
     parser.add_argument("--commit", required=True)
     parser.add_argument("--generated-at", default=None)
-    parser.add_argument("--tier-platinum", type=float, default=95.0)
-    parser.add_argument("--tier-gold", type=float, default=90.0)
-    parser.add_argument("--tier-silver", type=float, default=80.0)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Checklist config file forwarded to catalog.py")
     args = parser.parse_args(argv)
 
     source = args.source.resolve()
@@ -202,10 +201,9 @@ def main(argv=None) -> int:
         "--ref", args.ref,
         "--ref-type", args.ref_type,
         "--commit", args.commit,
-        "--tier-platinum", str(args.tier_platinum),
-        "--tier-gold", str(args.tier_gold),
-        "--tier-silver", str(args.tier_silver),
     ]
+    if args.config is not None:
+        catalog_argv += ["--config", str(args.config)]
     if args.generated_at:
         catalog_argv += ["--generated-at", args.generated_at]
     rc = catalog_mod.main(catalog_argv)

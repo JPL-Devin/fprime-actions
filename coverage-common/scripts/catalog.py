@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
 from _tiers import CoverageThresholds, codeql_tier, coverage_tier
 
@@ -448,9 +449,13 @@ def main(argv=None) -> int:
         default=None,
         help="ISO8601 timestamp; defaults to now() UTC",
     )
-    parser.add_argument("--tier-platinum", type=float, default=95.0)
-    parser.add_argument("--tier-gold", type=float, default=90.0)
-    parser.add_argument("--tier-silver", type=float, default=80.0)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Checklist config file (e.g. .github/module-checklist.yml); "
+        "defaults apply when omitted or missing",
+    )
     args = parser.parse_args(argv)
 
     dest = args.dest.resolve()
@@ -460,9 +465,7 @@ def main(argv=None) -> int:
     subdir_segment = f"{subdir}/" if subdir else ""
     int_subdir = args.int_coverage_subdirectory or "int-coverage"
     codeql_subdir = args.codeql_subdirectory or "codeql"
-    thresholds = CoverageThresholds(
-        platinum=args.tier_platinum, gold=args.tier_gold, silver=args.tier_silver
-    )
+    thresholds = coverage_thresholds(load_config(args.config))
 
     generated_at = args.generated_at or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

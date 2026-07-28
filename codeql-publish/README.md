@@ -63,10 +63,28 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
 ## Badge tiers
 
 * **Coverage** (line percent, same metric as the delta detector):
-  platinum >= `tier-platinum`, gold >= `tier-gold`, silver >= `tier-silver`,
-  bronze below. No coverage data is bronze.
+  thresholds come from the repo's checklist config file (see below);
+  defaults are platinum >= 95, gold >= 90, silver >= 80, bronze below.
+  No coverage data is bronze.
 * **CodeQL**: no findings -> platinum; worst finding low -> silver;
   medium or error -> bronze.
+
+## Checklist configuration
+
+Tier thresholds (and future reporting settings) are read from a config
+file versioned in the repository, by default `.github/module-checklist.yml`:
+
+```yaml
+coverage:
+  tiers:
+    platinum: 95
+    gold: 90
+    silver: 80
+```
+
+All keys are optional; defaults apply when the file or key is absent.
+Unknown keys are ignored so future settings can be added without breaking
+older action versions.
 
 ## Inputs
 
@@ -76,9 +94,7 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
 | `sarif-files`            | (required) | Newline-separated list of filtered SARIF files.                    |
 | `baseline-branch-prefix` | `coverage` | Prefix applied to `<ref-name>` to form the baseline branch.        |
 | `codeql-subdirectory`    | `codeql`   | Subdirectory under each module holding CodeQL findings.            |
-| `tier-platinum`          | `95`       | Line-coverage percent for the platinum tier (checklist rendering). |
-| `tier-gold`              | `90`       | Line-coverage percent for the gold tier.                           |
-| `tier-silver`            | `80`       | Line-coverage percent for the silver tier.                         |
+| `config-file`            | `.github/module-checklist.yml` | Checklist config file in the repo. Defaults apply when missing. |
 
 ## Outputs
 

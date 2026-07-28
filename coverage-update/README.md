@@ -73,9 +73,7 @@ concurrency:
 | `jobs`                   | `""`         | Parallel job count for check. `random` picks 1-32; empty omits `-j`.                                  |
 | `baseline-branch-prefix` | `coverage`   | Prefix applied to `<ref-name>` to form the baseline branch (`<prefix>/<ref-name>`).                  |
 | `coverage-subdirectory`  | `coverage`   | Subdirectory inside each module's baseline-branch entry. Set to `""` to flatten the shadow folder.   |
-| `tier-platinum`          | `95`         | Line-coverage percent required for the platinum badge tier.                                            |
-| `tier-gold`              | `90`         | Line-coverage percent required for the gold badge tier.                                                |
-| `tier-silver`            | `80`         | Line-coverage percent for silver; below is bronze. No coverage is bronze.                              |
+| `config-file`            | `.github/module-checklist.yml` | Checklist config file in the repo (tier thresholds and future settings). Defaults apply when missing. |
 
 ## Outputs
 
@@ -136,6 +134,24 @@ jobs:
         with: { run-check: 'false', jobs: random }
       - uses: nasa/fprime-actions/coverage-update@devel
 ```
+
+## Checklist configuration
+
+Badge-tier thresholds (and future reporting settings) are read from a
+config file versioned in the repository being published, by default
+`.github/module-checklist.yml`:
+
+```yaml
+coverage:
+  tiers:            # line-coverage percent cut-offs
+    platinum: 95
+    gold: 90
+    silver: 80      # below silver is bronze; no coverage is bronze
+```
+
+All keys are optional; defaults (95/90/80) apply when the file or key is
+absent.  Unknown keys are ignored so future settings can be added without
+breaking older action versions.
 
 ## Bootstrapping
 

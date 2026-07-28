@@ -15,8 +15,11 @@ kept on the global page only, attributed to ``(other)``.
 
 Alerts dismissed in the GitHub UI (fetched by ``fetch_dismissed_alerts.py``)
 are subtracted from the active findings and listed in a separate
-"dismissed" table with their dismissal reason and comment.  Tiers are
-computed from active findings only.  GitHub's own dedup uses SARIF
+"dismissed" table with their dismissal reason and comment.  Only dismissed
+alerts still detected by the SARIF being published appear in that table:
+a dismissal whose finding no longer shows up in the scan (fixed code,
+retired query, tightened SARIF filters) is stale and is omitted entirely.
+Tiers are computed from active findings only.  GitHub's own dedup uses SARIF
 fingerprints, which the REST alerts API does not expose; matching here
 requires rule + path and then either identical message text or a line
 within a small drift tolerance (the alert's ``most_recent_instance`` is
@@ -164,17 +167,18 @@ def load_dismissed_alerts(path: Optional[Path], module_paths: List[str]) -> List
     return dismissed
 
 
+def _matches(finding: "Finding", d: DismissedAlert) -> bool:
+    if d.rule != finding.rule or d.path != finding.path:
+        return False
+    if d.message and d.message == finding.message.strip():
+        return True
+    if d.line == 0 or finding.line == 0:
+        return True
+    return abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE
+
+
 def _is_dismissed(finding: "Finding", dismissed: List[DismissedAlert]) -> bool:
-    for d in dismissed:
-        if d.rule != finding.rule or d.path != finding.path:
-            continue
-        if d.message and d.message == finding.message.strip():
-            return True
-        if d.line == 0 or finding.line == 0:
-            return True
-        if abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE:
-            return True
-    return False
+    return any(_matches(finding, d) for d in dismissed)
 
 
 def filter_dismissed(
@@ -184,6 +188,31 @@ def filter_dismissed(
     if not dismissed:
         return findings
     return [f for f in findings if not _is_dismissed(f, dismissed)]
+
+
+def partition_dismissed(
+    findings: List[Finding], dismissed: List[DismissedAlert]
+) -> tuple[List[Finding], List[DismissedAlert]]:
+    """Split SARIF findings against the dismissed-alert list.
+
+    Returns ``(active, detected_dismissed)``: findings not matching any
+    dismissed alert, and dismissed alerts matched by at least one finding.
+    Dismissed alerts that no finding matches are stale (the scan no longer
+    detects them) and are dropped from both outputs.
+    """
+    if not dismissed:
+        return findings, []
+    active: list[Finding] = []
+    detected: set[int] = set()
+    for f in findings:
+        matched = False
+        for i, d in enumerate(dismissed):
+            if _matches(f, d):
+                detected.add(i)
+                matched = True
+        if not matched:
+            active.append(f)
+    return active, [d for i, d in enumerate(dismissed) if i in detected]
 
 
 def _owning_module(path: str, module_paths: List[str]) -> Optional[str]:
@@ -386,8 +415,8 @@ def main(argv=None) -> int:
         return 2
 
     all_findings = parse_sarif_files(sarif_files, module_paths)
-    dismissed = load_dismissed_alerts(args.dismissed_alerts, module_paths)
-    findings = filter_dismissed(all_findings, dismissed)
+    all_dismissed = load_dismissed_alerts(args.dismissed_alerts, module_paths)
+    findings, dismissed = partition_dismissed(all_findings, all_dismissed)
     by_module: dict[Optional[str], list[Finding]] = defaultdict(list)
     for f in findings:
         by_module[f.module].append(f)
@@ -441,7 +470,8 @@ def main(argv=None) -> int:
     print(
         f"codeql_findings: {len(findings)} active findings across {len(module_paths)} "
         f"modules ({unmapped} outside any module; "
-        f"{len(all_findings) - len(findings)} dismissed)",
+        f"{len(all_findings) - len(findings)} dismissed; "
+        f"{len(all_dismissed) - len(dismissed)} stale dismissal(s) ignored)",
         file=sys.stderr,
     )
     return 0

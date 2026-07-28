@@ -359,6 +359,19 @@ def test_catalog_groups_and_rollup():
         assert "badge-bronze" in index_html
         assert "no UT" in index_html
 
+        # Module rows link to the per-module roll-up page
+        assert 'href="Svc/CmdDispatcher/index.html"' in index_html
+
+        # Per-module roll-up pages link the artifact subtrees with badges
+        mod_page = (dest / "Svc/CmdDispatcher/index.html").read_text(encoding="utf-8")
+        assert 'href="coverage/index.html"' in mod_page
+        assert "badge-platinum" in mod_page
+        assert ">UT Coverage</td>" in mod_page
+        assert ">INT Coverage</td>" in mod_page
+        assert ">CodeQL</td>" in mod_page
+        assert "no data" in mod_page  # codeql not published yet
+        assert 'href="../../index.html"' in mod_page  # back-link to checklist
+
 
 def _sample_sarif(tmp: Path) -> Path:
     sarif = {
@@ -494,6 +507,62 @@ def test_dismissed_alerts_excluded_and_tabulated():
             path="Svc/CmdDispatcher/CmdDispatcher.cpp", line=200, rule="cpp/high-risk",
             severity="error", message="Dangerous thing.", module="Svc/CmdDispatcher")
         assert codeql_findings.filter_dismissed([f2], d) == []
+
+
+def test_stale_dismissed_alerts_not_shown():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        dest = tmp / "dest"
+        dest.mkdir()
+        sarif = _sample_sarif(tmp)
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+            {"path": "Drv/I2c", "has_ut": True},
+        ])
+        # One dismissal still detected by the SARIF, one stale (no longer found)
+        dismissed = tmp / "dismissed.json"
+        dismissed.write_text(json.dumps([
+            {"rule": "cpp/high-risk", "path": "Svc/CmdDispatcher/CmdDispatcher.cpp",
+             "line": 44, "message": "Dangerous thing.",
+             "reason": "won't fix", "comment": "accepted risk per review"},
+            {"rule": "cpp/retired-rule", "path": "Svc/CmdDispatcher/CmdDispatcher.cpp",
+             "line": 10, "message": "Old finding no longer detected.",
+             "reason": "false positive", "comment": "stale dismissal"},
+        ]), encoding="utf-8")
+
+        rc = codeql_findings.main([
+            "--sarif", str(sarif),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--repo-url", "https://github.com/org/repo",
+            "--dismissed-alerts", str(dismissed),
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+            "--generated-at", "2026-05-18T17:30:00Z",
+        ])
+        assert rc == 0
+
+        # Only the still-detected dismissal is counted and tabulated
+        cmd = json.loads((dest / "Svc/CmdDispatcher/codeql/summary.json").read_text())
+        assert cmd["dismissed"] == 1
+        page = (dest / "Svc/CmdDispatcher/codeql/index.html").read_text()
+        assert "Dismissed findings (1)" in page
+        assert "cpp/retired-rule" not in page
+        assert "stale dismissal" not in page
+
+        top = json.loads((dest / "codeql/summary.json").read_text())
+        assert top["dismissed"] == 1
+        global_page = (dest / "codeql/index.html").read_text()
+        assert "cpp/retired-rule" not in global_page
+
+        # partition_dismissed drops stale alerts, keeps detected ones
+        d = codeql_findings.load_dismissed_alerts(dismissed, ["Svc/CmdDispatcher"])
+        f = codeql_findings.Finding(
+            path="Svc/CmdDispatcher/CmdDispatcher.cpp", line=42, rule="cpp/high-risk",
+            severity="error", message="Dangerous thing.", module="Svc/CmdDispatcher")
+        active, detected = codeql_findings.partition_dismissed([f], d)
+        assert active == []
+        assert [x.rule for x in detected] == ["cpp/high-risk"]
 
 
 def test_fetch_dismissed_alerts_extract():
@@ -772,6 +841,7 @@ TESTS = [
     test_catalog_groups_and_rollup,
     test_codeql_findings_per_module_pages_and_summaries,
     test_dismissed_alerts_excluded_and_tabulated,
+    test_stale_dismissed_alerts_not_shown,
     test_fetch_dismissed_alerts_extract,
     test_codeql_findings_idempotent_rerun_clears_stale,
     test_catalog_merges_codeql_and_coverage,

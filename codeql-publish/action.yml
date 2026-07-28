@@ -1,0 +1,109 @@
+name: "F´ CodeQL findings (publish)"
+description: >
+  Publish per-module CodeQL findings (line, rule, severity) onto the
+  per-base-branch baseline branch (coverage/<ref-name>) and regenerate the
+  checklist landing page.  Consumes already-filtered SARIF files from a
+  completed CodeQL analysis -- no re-scan is performed.  Intended to run on
+  push events with permissions: { contents: write }.  Skipped on fork pushes.
+inputs:
+  working-directory:
+    description: "Repository checkout root (modules are discovered here)"
+    required: false
+    default: "."
+  sarif-files:
+    description: "Newline-separated list of filtered SARIF files to publish"
+    required: true
+  baseline-branch-prefix:
+    description: "Prefix applied to <ref-name> to form the baseline branch name"
+    required: false
+    default: "coverage"
+  codeql-subdirectory:
+    description: "Subdirectory under each module in the baseline branch holding CodeQL findings"
+    required: false
+    default: "codeql"
+  tier-platinum:
+    description: "Line-coverage percent required for the platinum badge tier (checklist regeneration)"
+    required: false
+    default: "95"
+  tier-gold:
+    description: "Line-coverage percent required for the gold badge tier (checklist regeneration)"
+    required: false
+    default: "90"
+  tier-silver:
+    description: "Line-coverage percent required for the silver badge tier (checklist regeneration)"
+    required: false
+    default: "80"
+
+outputs:
+  baseline-branch:
+    description: "Name of the baseline branch that was written"
+    value: ${{ steps.publish.outputs.baseline-branch }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Compute ref / ref-type"
+      id: ref
+      shell: bash
+      env:
+        REF: ${{ github.ref }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        echo "ref-name=${REF_NAME}" >> "$GITHUB_OUTPUT"
+        case "$REF" in
+          refs/tags/*) echo "ref-type=tag"    >> "$GITHUB_OUTPUT" ;;
+          *)           echo "ref-type=branch" >> "$GITHUB_OUTPUT" ;;
+        esac
+
+    - name: "Publish findings to baseline branch"
+      id: publish
+      if: github.event.repository.fork == false
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+        REF_NAME: ${{ steps.ref.outputs.ref-name }}
+        REF_TYPE: ${{ steps.ref.outputs.ref-type }}
+        CODEQL_SUBDIR: ${{ inputs.codeql-subdirectory }}
+        SARIF_FILES: ${{ inputs.sarif-files }}
+        COMMIT_SHA: ${{ github.sha }}
+        REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        TIER_PLATINUM: ${{ inputs.tier-platinum }}
+        TIER_GOLD: ${{ inputs.tier-gold }}
+        TIER_SILVER: ${{ inputs.tier-silver }}
+      run: |
+        set -e
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+
+        MODULES_JSONL="${RUNNER_TEMP:-/tmp}/codeql-modules.jsonl"
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
+        export MODULES_JSONL
+
+        SARIF_ARGS=""
+        while IFS= read -r f; do
+          [ -n "$f" ] && SARIF_ARGS="$SARIF_ARGS --sarif $f"
+        done <<< "$SARIF_FILES"
+        export SARIF_ARGS
+
+        bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
+          "$BASELINE_BRANCH" "$COMMIT_SHA" "codeql" \
+          bash -c 'python3 "${COMMON_PATH}/scripts/codeql_findings.py" \
+            $SARIF_ARGS \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --codeql-subdirectory "$CODEQL_SUBDIR" \
+            --repo-url "$REPO_URL" \
+            --ref "$REF_NAME" \
+            --commit "$COMMIT_SHA" \
+          && python3 "${COMMON_PATH}/scripts/catalog.py" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --codeql-subdirectory "$CODEQL_SUBDIR" \
+            --ref "$REF_NAME" \
+            --ref-type "$REF_TYPE" \
+            --commit "$COMMIT_SHA" \
+            --tier-platinum "$TIER_PLATINUM" \
+            --tier-gold "$TIER_GOLD" \
+            --tier-silver "$TIER_SILVER"'

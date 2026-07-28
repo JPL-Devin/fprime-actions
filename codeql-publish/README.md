@@ -62,9 +62,10 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
    rule + path plus either identical message text or a line within a small
    drift tolerance (the alert's `most_recent_instance` is re-anchored by
    GitHub on every upload, so its line tracks the analyzed HEAD closely).
-   Dismissed findings are listed in a separate table
-   (file, line, rule, dismissal reason, comment) and counted in
-   `summary.json` as `dismissed`; tiers use active findings only. API
+   Dismissed findings **still detected by the SARIF** are listed in a
+   separate table (file, line, rule, dismissal reason, comment) and counted
+   in `summary.json` as `dismissed`; stale dismissals no longer found by
+   the scan are omitted entirely. Tiers use active findings only. API
    failures degrade gracefully to unfiltered SARIF with a warning.
 4. Maps each finding to its owning module by longest-prefix path match;
    findings outside every module appear only on the global page.
@@ -72,7 +73,8 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
    and `<mod>/codeql/summary.json` for every module (clean modules get a
    "clean" page), plus a global `codeql/` entry.
 6. Regenerates the top-level checklist `index.html` + `catalog.json`
-   (schema v2) with platinum/gold/silver/bronze badges.
+   (schema v2) with platinum/gold/silver/bronze badges, plus a per-module
+   roll-up `<mod>/index.html` linking each artifact subtree with its badge.
 7. Commits and pushes via the shared retrying publish helper.
 
 ## Badge tiers
@@ -153,6 +155,7 @@ coverage/devel
 ├── catalog.json               schema v2 (regenerated)
 ├── codeql/                    global findings page + summary.json
 ├── Svc/CmdDispatcher/
+│   ├── index.html             module roll-up page (regenerated)
 │   ├── coverage/              (written by coverage-update)
 │   └── codeql/                index.html + summary.json (this action)
 └── ...

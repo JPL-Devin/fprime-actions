@@ -13,6 +13,10 @@ Outputs (written to ``--dest``):
     * ``index.html``   -- self-contained checklist landing page: one row per
       module with a link + tier badge (platinum/gold/silver/bronze) per
       artifact type.
+    * ``<mod>/index.html`` -- per-module roll-up page linking each published
+      artifact subtree (coverage, int-coverage, codeql) with its badge.
+      Skipped when the coverage subdirectory is flattened (""), where the
+      module root already is the coverage report.
 
 Because all inputs are read from ``--dest`` (the baseline branch itself),
 regeneration is idempotent and order-independent: any publisher (coverage,
@@ -86,6 +90,33 @@ table a:hover { text-decoration: underline; }
 .section-title { margin: 1.25rem 0 0.5rem 0; font-size: 1.05rem; }
 """
 
+MODULE_CSS = """\
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0; padding: 1.5rem; color: #1f2328; background: #ffffff;
+}
+h1 { margin: 0 0 0.25rem 0; font-size: 1.2rem; }
+.meta { color: #57606a; font-size: 0.9rem; margin-bottom: 1rem; }
+.meta a, table a { color: #0969da; text-decoration: none; }
+.meta a:hover, table a:hover { text-decoration: underline; }
+table { border-collapse: collapse; min-width: 32rem; }
+table th, table td { padding: 0.45rem 0.75rem; text-align: left; }
+table th { font-weight: 500; color: #57606a; font-size: 0.85rem; border-bottom: 1px solid #eaeef2; }
+table tr { border-top: 1px solid #eaeef2; }
+table tr:hover { background: #f6f8fa; }
+.badge {
+  display: inline-block; padding: 0.05rem 0.55rem; border-radius: 2em;
+  font-size: 0.78rem; font-weight: 600; border: 1px solid transparent;
+  vertical-align: baseline;
+}
+.badge-platinum { background: #eef1f4; color: #24292f; border-color: #afb8c1; }
+.badge-gold     { background: #fff3c4; color: #7d5a00; border-color: #d4af37; }
+.badge-silver   { background: #f0f0f0; color: #57606a; border-color: #c0c0c0; }
+.badge-bronze   { background: #f5e0d1; color: #8a4412; border-color: #cd7f32; }
+.no-cov { color: #6e7781; font-style: italic; font-size: 0.85rem; }
+"""
+
 TIER_LABELS = {
     "platinum": "Platinum",
     "gold": "Gold",
@@ -123,6 +154,7 @@ class ModuleEntry:
     int_report: str
     codeql_summary: Optional[dict]
     codeql_report: str
+    module_report: Optional[str] = None  # roll-up page, when one is written
 
     @property
     def top_dir(self) -> str:
@@ -254,7 +286,7 @@ def _render_group(group: Group, thresholds: CoverageThresholds) -> str:
         )
         rows.append(
             f'<tr class="row">'
-            f'<td><a href="{html.escape(mod.ut_report)}">{path_esc}</a></td>'
+            f'<td><a href="{html.escape(mod.module_report or mod.ut_report)}">{path_esc}</a></td>'
             f'<td class="cell">{ut_html}</td>'
             f'<td class="cell">{_int_cell(mod, thresholds)}</td>'
             f'<td class="cell">{_codeql_cell(mod)}</td>'
@@ -267,6 +299,72 @@ def _render_group(group: Group, thresholds: CoverageThresholds) -> str:
         f'<th class="cell">INT Coverage</th><th class="cell">CodeQL</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
         f"</details>"
+    )
+
+
+def render_module_index_html(
+    *,
+    entry: ModuleEntry,
+    ref: str,
+    ref_type: str,
+    commit: str,
+    generated_at: str,
+    thresholds: CoverageThresholds,
+    coverage_subdir: str,
+    int_subdir: str,
+    codeql_subdir: str,
+) -> str:
+    """Render a module's roll-up page linking its published artifact subtrees.
+
+    Links are relative to the module directory itself, so the page works
+    wherever the baseline branch is hosted.
+    """
+    rows: list[str] = []
+
+    missing_note = "no UT" if not entry.has_ut else "no coverage"
+    ut_html = _coverage_cell(
+        entry.ut_summary, entry.has_coverage, f"{coverage_subdir}/index.html",
+        thresholds, missing_note=missing_note,
+    )
+    rows.append(f"<tr><td>UT Coverage</td><td>{ut_html}</td></tr>")
+
+    if entry.int_summary is not None:
+        int_html = _coverage_cell(
+            entry.int_summary, entry.has_int_coverage, f"{int_subdir}/index.html",
+            thresholds, missing_note="no coverage",
+        )
+    else:
+        int_html = '<span class="no-cov">no data</span>'
+    rows.append(f"<tr><td>INT Coverage</td><td>{int_html}</td></tr>")
+
+    if entry.codeql_summary is not None:
+        count = int(entry.codeql_summary.get("findings", 0))
+        dismissed = int(entry.codeql_summary.get("dismissed", 0) or 0)
+        tier = codeql_tier(entry.codeql_summary.get("worst"))
+        label = "clean" if count == 0 else f"{count} finding{'s' if count != 1 else ''}"
+        if dismissed:
+            label += f" ({dismissed} dismissed)"
+        codeql_html = (
+            f'{badge_html(tier)} <a href="{codeql_subdir}/index.html">{label}</a>'
+        )
+    else:
+        codeql_html = '<span class="no-cov">no data</span>'
+    rows.append(f"<tr><td>CodeQL</td><td>{codeql_html}</td></tr>")
+
+    depth = entry.path.count("/") + 1
+    checklist_href = "../" * depth + "index.html"
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        f"<title>{html.escape(entry.path)} \u2014 {html.escape(ref)}</title>"
+        f"<style>{MODULE_CSS}</style></head><body>"
+        f"<h1><code>{html.escape(entry.path)}</code></h1>"
+        f'<div class="meta"><a href="{checklist_href}">\u2190 checklist</a> &middot; '
+        f"{html.escape(ref_type)} <code>{html.escape(ref)}</code> "
+        f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
+        "<table><thead><tr><th>Artifact</th><th>Status</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        "</body></html>\n"
     )
 
 
@@ -494,7 +592,29 @@ def main(argv=None) -> int:
                     int_report=f"{path}/{int_subdir}/index.html",
                     codeql_summary=codeql_summary,
                     codeql_report=f"{path}/{codeql_subdir}/index.html",
+                    module_report=f"{path}/index.html" if subdir else None,
                 )
+            )
+
+    # Per-module roll-up pages.  In flatten mode (subdir == "") the module
+    # root already holds the coverage report's own index.html, so skip.
+    if subdir:
+        for entry in entries:
+            mod_dir = dest / entry.path
+            mod_dir.mkdir(parents=True, exist_ok=True)
+            (mod_dir / "index.html").write_text(
+                render_module_index_html(
+                    entry=entry,
+                    ref=args.ref,
+                    ref_type=args.ref_type,
+                    commit=args.commit,
+                    generated_at=generated_at,
+                    thresholds=thresholds,
+                    coverage_subdir=subdir,
+                    int_subdir=int_subdir,
+                    codeql_subdir=codeql_subdir,
+                ),
+                encoding="utf-8",
             )
 
     overall_dir = dest / subdir if subdir else dest

@@ -42,11 +42,27 @@ permissions:
 3. Fetches or creates the baseline branch as a worktree (orphan branch on
    first push).
 4. Mirrors the per-module + global outputs into the worktree, writes
-   placeholder pages for modules with no coverage, generates a top-level
-   folder-tree `index.html` and a machine-readable `catalog.json`.
-5. Commits and pushes if there are changes.
+   placeholder pages for modules with no coverage, generates the top-level
+   checklist `index.html` (with platinum/gold/silver/bronze badges) and a
+   machine-readable `catalog.json` (schema v2).  The checklist merges
+   whatever other artifact types (e.g. [`codeql-publish`](../codeql-publish/))
+   already exist on the branch.
+5. Commits and pushes via the shared retrying publish helper
+   (`coverage-common/scripts/publish_baseline.sh`); non-fast-forward pushes
+   are retried after re-mirroring, so concurrent writers to the same branch
+   cannot clobber each other.
 
 Forks are skipped automatically (no push from forks).
+
+When multiple workflows publish to the same baseline branch (coverage,
+codeql, future int-coverage), give each publisher job the same repo-wide
+concurrency group:
+
+```yaml
+concurrency:
+  group: baseline-publish-${{ github.ref }}
+  cancel-in-progress: false
+```
 
 ## Inputs
 
@@ -57,6 +73,7 @@ Forks are skipped automatically (no push from forks).
 | `jobs`                   | `""`         | Parallel job count for check. `random` picks 1-32; empty omits `-j`.                                  |
 | `baseline-branch-prefix` | `coverage`   | Prefix applied to `<ref-name>` to form the baseline branch (`<prefix>/<ref-name>`).                  |
 | `coverage-subdirectory`  | `coverage`   | Subdirectory inside each module's baseline-branch entry. Set to `""` to flatten the shadow folder.   |
+| `config-file`            | `.github/module-checklist.yml` | Checklist config file in the repo (tier thresholds and future settings). Defaults apply when missing. |
 
 ## Outputs
 
@@ -69,8 +86,8 @@ Forks are skipped automatically (no push from forks).
 
 ```
 <prefix>/<ref-name>            (orphan branch, e.g. coverage/devel)
-├── catalog.json                       machine-readable module list
-├── index.html                         folder-tree catalog
+├── catalog.json                       machine-readable module list (schema v2)
+├── index.html                         checklist landing page (badges per module)
 ├── coverage/                          global --all run
 │   ├── summary.json
 │   ├── coverage-all.html              gcovr's native global report
@@ -117,6 +134,24 @@ jobs:
         with: { run-check: 'false', jobs: random }
       - uses: nasa/fprime-actions/coverage-update@devel
 ```
+
+## Checklist configuration
+
+Badge-tier thresholds (and future reporting settings) are read from a
+config file versioned in the repository being published, by default
+`.github/module-checklist.yml`:
+
+```yaml
+coverage:
+  tiers:            # line-coverage percent cut-offs
+    platinum: 95
+    gold: 90
+    silver: 80      # below silver is bronze; no coverage is bronze
+```
+
+All keys are optional; defaults (95/90/80) apply when the file or key is
+absent.  Unknown keys are ignored so future settings can be added without
+breaking older action versions.
 
 ## Bootstrapping
 

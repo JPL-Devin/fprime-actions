@@ -1,0 +1,124 @@
+name: "F´ CodeQL findings (publish)"
+description: >
+  Publish per-module CodeQL findings (line, rule, severity) onto the
+  per-base-branch baseline branch (coverage/<ref-name>) and regenerate the
+  checklist landing page.  Consumes already-filtered SARIF files from a
+  completed CodeQL analysis -- no re-scan is performed.  Intended to run on
+  push events with permissions: { contents: write }.  Skipped on fork pushes.
+inputs:
+  working-directory:
+    description: "Repository checkout root (modules are discovered here)"
+    required: false
+    default: "."
+  sarif-files:
+    description: "Newline-separated list of filtered SARIF files to publish"
+    required: true
+  baseline-branch-prefix:
+    description: "Prefix applied to <ref-name> to form the baseline branch name"
+    required: false
+    default: "coverage"
+  codeql-subdirectory:
+    description: "Subdirectory under each module in the baseline branch holding CodeQL findings"
+    required: false
+    default: "codeql"
+  config-file:
+    description: >
+      Path (relative to working-directory) of the checklist config file
+      holding badge-tier thresholds and future reporting settings.
+      Defaults apply when the file does not exist.
+    required: false
+    default: ".github/module-checklist.yml"
+  github-token:
+    description: >
+      Token used to fetch dismissed code-scanning alerts so UI dismissals
+      are excluded from the published tables (requires security-events:
+      read).  Set to "" to skip dismissal filtering.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  baseline-branch:
+    description: "Name of the baseline branch that was written"
+    value: ${{ steps.publish.outputs.baseline-branch }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Compute ref / ref-type"
+      id: ref
+      shell: bash
+      env:
+        REF: ${{ github.ref }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        echo "ref-name=${REF_NAME}" >> "$GITHUB_OUTPUT"
+        case "$REF" in
+          refs/tags/*) echo "ref-type=tag"    >> "$GITHUB_OUTPUT" ;;
+          *)           echo "ref-type=branch" >> "$GITHUB_OUTPUT" ;;
+        esac
+
+    - name: "Publish findings to baseline branch"
+      id: publish
+      if: github.event.repository.fork == false
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+        REF_NAME: ${{ steps.ref.outputs.ref-name }}
+        REF_TYPE: ${{ steps.ref.outputs.ref-type }}
+        CODEQL_SUBDIR: ${{ inputs.codeql-subdirectory }}
+        SARIF_FILES: ${{ inputs.sarif-files }}
+        COMMIT_SHA: ${{ github.sha }}
+        REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        CONFIG_FILE: ${{ inputs.config-file }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REPO_SLUG: ${{ github.repository }}
+      run: |
+        set -e
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+
+        # The SARIF is a point-in-time analysis artifact and knows nothing
+        # about alerts dismissed in the GitHub UI, so fetch the dismissed
+        # alerts once per publish and subtract them from the findings
+        # tables.  Failures degrade to unfiltered SARIF with a warning.
+        DISMISSED_JSON="${RUNNER_TEMP:-/tmp}/codeql-dismissed-alerts.json"
+        python3 "${COMMON_PATH}/scripts/fetch_dismissed_alerts.py" \
+          --repo "$REPO_SLUG" --output "$DISMISSED_JSON"
+        export DISMISSED_JSON
+
+        MODULES_JSONL="${RUNNER_TEMP:-/tmp}/codeql-modules.jsonl"
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
+        export MODULES_JSONL
+
+        SARIF_ARGS=""
+        while IFS= read -r f; do
+          [ -n "$f" ] && SARIF_ARGS="$SARIF_ARGS --sarif $f"
+        done <<< "$SARIF_FILES"
+        export SARIF_ARGS
+
+        # Resolve the config path against the source checkout so it is still
+        # found when the mirror command runs against the baseline worktree.
+        CONFIG_ABS="$(pwd)/${CONFIG_FILE}"
+        export CONFIG_ABS
+
+        bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
+          "$BASELINE_BRANCH" "$COMMIT_SHA" "codeql" \
+          bash -c 'python3 "${COMMON_PATH}/scripts/codeql_findings.py" \
+            $SARIF_ARGS \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --codeql-subdirectory "$CODEQL_SUBDIR" \
+            --repo-url "$REPO_URL" \
+            --dismissed-alerts "$DISMISSED_JSON" \
+            --ref "$REF_NAME" \
+            --commit "$COMMIT_SHA" \
+          && python3 "${COMMON_PATH}/scripts/catalog.py" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --codeql-subdirectory "$CODEQL_SUBDIR" \
+            --ref "$REF_NAME" \
+            --ref-type "$REF_TYPE" \
+            --commit "$COMMIT_SHA" \
+            --config "$CONFIG_ABS"'

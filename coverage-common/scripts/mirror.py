@@ -164,6 +164,8 @@ def main(argv=None) -> int:
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
     parser.add_argument("--commit", required=True)
     parser.add_argument("--generated-at", default=None)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Checklist config file forwarded to catalog.py")
     args = parser.parse_args(argv)
 
     source = args.source.resolve()
@@ -190,8 +192,9 @@ def main(argv=None) -> int:
         )
 
     # Defer to catalog.py for catalog.json + top-level index.html.
+    # catalog.py reads all summaries from the baseline worktree (dest), so
+    # the page reflects every artifact type published so far, not just ours.
     catalog_argv = [
-        "--source", str(source),
         "--dest", str(dest),
         "--modules-jsonl", str(args.modules_jsonl),
         "--coverage-subdirectory", subdir,
@@ -199,6 +202,8 @@ def main(argv=None) -> int:
         "--ref-type", args.ref_type,
         "--commit", args.commit,
     ]
+    if args.config is not None:
+        catalog_argv += ["--config", str(args.config)]
     if args.generated_at:
         catalog_argv += ["--generated-at", args.generated_at]
     rc = catalog_mod.main(catalog_argv)

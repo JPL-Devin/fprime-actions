@@ -57,8 +57,12 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
    otherwise SARIF level error/warning/note maps to error/medium/low).
 3. Fetches alerts **dismissed in the GitHub UI** (one paginated
    code-scanning API call per publish, `state=dismissed`) and subtracts
-   them from the active findings, matched on rule + path with a small
-   line-drift tolerance. Dismissed findings are listed in a separate table
+   them from the active findings. GitHub deduplicates alerts with SARIF
+   fingerprints, which the REST API does not expose, so matching requires
+   rule + path plus either identical message text or a line within a small
+   drift tolerance (the alert's `most_recent_instance` is re-anchored by
+   GitHub on every upload, so its line tracks the analyzed HEAD closely).
+   Dismissed findings are listed in a separate table
    (file, line, rule, dismissal reason, comment) and counted in
    `summary.json` as `dismissed`; tiers use active findings only. API
    failures degrade gracefully to unfiltered SARIF with a warning.

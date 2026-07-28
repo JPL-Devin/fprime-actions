@@ -443,7 +443,8 @@ def test_dismissed_alerts_excluded_and_tabulated():
         dismissed = tmp / "dismissed.json"
         dismissed.write_text(json.dumps([
             {"rule": "cpp/high-risk", "path": "Svc/CmdDispatcher/CmdDispatcher.cpp",
-             "line": 44, "reason": "won't fix", "comment": "accepted risk per review"},
+             "line": 44, "message": "Dangerous thing.",
+             "reason": "won't fix", "comment": "accepted risk per review"},
         ]), encoding="utf-8")
 
         rc = codeql_findings.main([
@@ -482,12 +483,17 @@ def test_dismissed_alerts_excluded_and_tabulated():
         assert top["findings"] == 2  # 3 in SARIF minus 1 dismissed
         assert top["dismissed"] == 1
 
-        # Out-of-tolerance line drift does NOT match
+        d = codeql_findings.load_dismissed_alerts(dismissed, ["Svc/CmdDispatcher"])
+        # Out-of-tolerance line drift + different message does NOT match
         f = codeql_findings.Finding(
             path="Svc/CmdDispatcher/CmdDispatcher.cpp", line=60, rule="cpp/high-risk",
-            severity="error", message="m", module="Svc/CmdDispatcher")
-        d = codeql_findings.load_dismissed_alerts(dismissed, ["Svc/CmdDispatcher"])
+            severity="error", message="A different alert.", module="Svc/CmdDispatcher")
         assert codeql_findings.filter_dismissed([f], d) == [f]
+        # Identical message text matches even with large line drift
+        f2 = codeql_findings.Finding(
+            path="Svc/CmdDispatcher/CmdDispatcher.cpp", line=200, rule="cpp/high-risk",
+            severity="error", message="Dangerous thing.", module="Svc/CmdDispatcher")
+        assert codeql_findings.filter_dismissed([f2], d) == []
 
 
 def test_fetch_dismissed_alerts_extract():
@@ -502,9 +508,11 @@ def test_fetch_dismissed_alerts_extract():
         },
         {"rule": {}, "most_recent_instance": {}},  # malformed -> skipped
     ]
+    alerts[0]["most_recent_instance"]["message"] = {"text": "Bad thing here."}
     out = fetch_dismissed_alerts.extract(alerts)
     assert out == [{
         "rule": "cpp/high-risk", "path": "Fw/Foo/Bar.cpp", "line": 12,
+        "message": "Bad thing here.",
         "reason": "false positive", "comment": "autocoded region",
     }]
 

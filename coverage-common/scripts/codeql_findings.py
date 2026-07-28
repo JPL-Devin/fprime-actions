@@ -14,10 +14,13 @@ Findings whose file path does not fall under any discovered module are
 kept on the global page only, attributed to ``(other)``.
 
 Alerts dismissed in the GitHub UI (fetched by ``fetch_dismissed_alerts.py``)
-are subtracted from the active findings (matched on rule + path, with line
-tolerance for drift between the dismissal commit and HEAD) and listed in a
-separate "dismissed" table with their dismissal reason and comment.  Tiers
-are computed from active findings only.
+are subtracted from the active findings and listed in a separate
+"dismissed" table with their dismissal reason and comment.  Tiers are
+computed from active findings only.  GitHub's own dedup uses SARIF
+fingerprints, which the REST alerts API does not expose; matching here
+requires rule + path and then either identical message text or a line
+within a small drift tolerance (the alert's ``most_recent_instance`` is
+re-anchored by GitHub on every upload, so its line tracks HEAD closely).
 
 Like ``mirror.py`` this script is idempotent: it deletes each module's
 codeql directory before writing so re-runs cannot leave stale findings.
@@ -126,6 +129,7 @@ class DismissedAlert:
     path: str
     line: int
     rule: str
+    message: str
     reason: str
     comment: str
     module: Optional[str]
@@ -150,6 +154,7 @@ def load_dismissed_alerts(path: Optional[Path], module_paths: List[str]) -> List
                 path=epath,
                 line=int(e.get("line") or 0),
                 rule=rule,
+                message=(e.get("message") or "").strip(),
                 reason=e.get("reason") or "",
                 comment=e.get("comment") or "",
                 module=_owning_module(epath, module_paths),
@@ -161,11 +166,14 @@ def load_dismissed_alerts(path: Optional[Path], module_paths: List[str]) -> List
 
 def _is_dismissed(finding: "Finding", dismissed: List[DismissedAlert]) -> bool:
     for d in dismissed:
-        if d.rule == finding.rule and d.path == finding.path:
-            if d.line == 0 or finding.line == 0:
-                return True
-            if abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE:
-                return True
+        if d.rule != finding.rule or d.path != finding.path:
+            continue
+        if d.message and d.message == finding.message.strip():
+            return True
+        if d.line == 0 or finding.line == 0:
+            return True
+        if abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE:
+            return True
     return False
 
 

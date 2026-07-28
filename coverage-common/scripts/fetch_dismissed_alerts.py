@@ -13,7 +13,15 @@ written, and the publish proceeds with unfiltered SARIF findings.
 Output format (one entry per dismissed alert)::
 
     [{"rule": "cpp/xyz", "path": "Fw/Foo/Bar.cpp", "line": 42,
-      "reason": "won't fix", "comment": "false positive in autocode"}]
+      "message": "...", "reason": "won't fix",
+      "comment": "false positive in autocode"}]
+
+Note on matching fidelity: GitHub deduplicates alerts internally using
+SARIF fingerprints (``primaryLocationLineHash``), but the REST alerts API
+does not expose them.  The next-best stable keys it does expose are the
+rule id, file path, message text, and the line of the alert's
+``most_recent_instance`` — which GitHub itself re-anchors on every SARIF
+upload, so its line number tracks the analyzed HEAD closely.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ def extract(alerts: list) -> List[dict]:
                 "rule": rule,
                 "path": path,
                 "line": int(location.get("start_line") or 0),
+                "message": ((instance.get("message") or {}).get("text") or "").strip(),
                 "reason": alert.get("dismissed_reason") or "",
                 "comment": alert.get("dismissed_comment") or "",
             }

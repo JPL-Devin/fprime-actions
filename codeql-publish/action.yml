@@ -28,6 +28,13 @@ inputs:
       Defaults apply when the file does not exist.
     required: false
     default: ".github/module-checklist.yml"
+  github-token:
+    description: >
+      Token used to fetch dismissed code-scanning alerts so UI dismissals
+      are excluded from the published tables (requires security-events:
+      read).  Set to "" to skip dismissal filtering.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   baseline-branch:
@@ -65,10 +72,21 @@ runs:
         COMMIT_SHA: ${{ github.sha }}
         REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         CONFIG_FILE: ${{ inputs.config-file }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REPO_SLUG: ${{ github.repository }}
       run: |
         set -e
         BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
         echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+
+        # The SARIF is a point-in-time analysis artifact and knows nothing
+        # about alerts dismissed in the GitHub UI, so fetch the dismissed
+        # alerts once per publish and subtract them from the findings
+        # tables.  Failures degrade to unfiltered SARIF with a warning.
+        DISMISSED_JSON="${RUNNER_TEMP:-/tmp}/codeql-dismissed-alerts.json"
+        python3 "${COMMON_PATH}/scripts/fetch_dismissed_alerts.py" \
+          --repo "$REPO_SLUG" --output "$DISMISSED_JSON"
+        export DISMISSED_JSON
 
         MODULES_JSONL="${RUNNER_TEMP:-/tmp}/codeql-modules.jsonl"
         python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
@@ -93,6 +111,7 @@ runs:
             --modules-jsonl "$MODULES_JSONL" \
             --codeql-subdirectory "$CODEQL_SUBDIR" \
             --repo-url "$REPO_URL" \
+            --dismissed-alerts "$DISMISSED_JSON" \
             --ref "$REF_NAME" \
             --commit "$COMMIT_SHA" \
           && python3 "${COMMON_PATH}/scripts/catalog.py" \

@@ -13,6 +13,12 @@ Severities are normalized to error / medium / low (see ``_tiers.py``).
 Findings whose file path does not fall under any discovered module are
 kept on the global page only, attributed to ``(other)``.
 
+Alerts dismissed in the GitHub UI (fetched by ``fetch_dismissed_alerts.py``)
+are subtracted from the active findings (matched on rule + path, with line
+tolerance for drift between the dismissal commit and HEAD) and listed in a
+separate "dismissed" table with their dismissal reason and comment.  Tiers
+are computed from active findings only.
+
 Like ``mirror.py`` this script is idempotent: it deletes each module's
 codeql directory before writing so re-runs cannot leave stale findings.
 """
@@ -52,9 +58,15 @@ table a:hover { text-decoration: underline; }
 .sev-low    { color: #57606a; }
 .clean { padding: 0.75rem 1rem; background: #dafbe1; border: 1px solid #aceebb;
          border-radius: 6px; color: #1a7f37; }
+h2 { margin: 1.5rem 0 0.5rem 0; font-size: 1.05rem; }
+.dismissed td { color: #57606a; }
 """
 
 SEVERITY_RANK = {"error": 0, "medium": 1, "low": 2}
+
+# Dismissals are matched on rule + path with this much line drift allowed
+# (line numbers move between the dismissal commit and the analyzed HEAD).
+DISMISS_LINE_TOLERANCE = 5
 
 
 @dataclass(frozen=True)
@@ -109,6 +121,63 @@ def _result_location(result: dict) -> tuple[Optional[str], int]:
     return None, 0
 
 
+@dataclass(frozen=True)
+class DismissedAlert:
+    path: str
+    line: int
+    rule: str
+    reason: str
+    comment: str
+    module: Optional[str]
+
+
+def load_dismissed_alerts(path: Optional[Path], module_paths: List[str]) -> List[DismissedAlert]:
+    if path is None or not path.is_file():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"codeql_findings: bad dismissed-alerts file {path}: {exc}", file=sys.stderr)
+        return []
+    dismissed = []
+    for e in entries if isinstance(entries, list) else []:
+        rule = e.get("rule") or ""
+        epath = (e.get("path") or "").lstrip("/")
+        if not rule or not epath:
+            continue
+        dismissed.append(
+            DismissedAlert(
+                path=epath,
+                line=int(e.get("line") or 0),
+                rule=rule,
+                reason=e.get("reason") or "",
+                comment=e.get("comment") or "",
+                module=_owning_module(epath, module_paths),
+            )
+        )
+    dismissed.sort(key=lambda d: (d.path, d.line, d.rule))
+    return dismissed
+
+
+def _is_dismissed(finding: "Finding", dismissed: List[DismissedAlert]) -> bool:
+    for d in dismissed:
+        if d.rule == finding.rule and d.path == finding.path:
+            if d.line == 0 or finding.line == 0:
+                return True
+            if abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE:
+                return True
+    return False
+
+
+def filter_dismissed(
+    findings: List[Finding], dismissed: List[DismissedAlert]
+) -> List[Finding]:
+    """Active findings only: subtract anything matching a dismissed alert."""
+    if not dismissed:
+        return findings
+    return [f for f in findings if not _is_dismissed(f, dismissed)]
+
+
 def _owning_module(path: str, module_paths: List[str]) -> Optional[str]:
     """Longest-prefix match of a file path onto the module list."""
     best = None
@@ -146,7 +215,7 @@ def parse_sarif_files(sarif_paths: Iterable[Path], module_paths: List[str]) -> L
     return findings
 
 
-def summarize(findings: List[Finding]) -> dict:
+def summarize(findings: List[Finding], dismissed_count: int = 0) -> dict:
     by_severity = {"error": 0, "medium": 0, "low": 0}
     for f in findings:
         by_severity[f.severity] += 1
@@ -160,6 +229,7 @@ def summarize(findings: List[Finding]) -> dict:
         "by_severity": by_severity,
         "worst": worst,
         "tier": codeql_tier(worst),
+        "dismissed": dismissed_count,
     }
 
 
@@ -168,6 +238,36 @@ def _blob_url(repo_url: str, commit: str, path: str, line: int) -> Optional[str]
         return None
     anchor = f"#L{line}" if line > 0 else ""
     return f"{repo_url.rstrip('/')}/blob/{commit}/{path}{anchor}"
+
+
+def _dismissed_table_html(
+    dismissed: List[DismissedAlert], repo_url: str, commit: str, show_module_column: bool
+) -> str:
+    if not dismissed:
+        return ""
+    module_th = "<th>Module</th>" if show_module_column else ""
+    rows = []
+    for d in dismissed:
+        url = _blob_url(repo_url, commit, d.path, d.line)
+        loc = html.escape(d.path)
+        loc_html = f'<a href="{html.escape(url)}">{loc}</a>' if url else loc
+        module_td = (
+            f"<td>{html.escape(d.module or '(other)')}</td>" if show_module_column else ""
+        )
+        rows.append(
+            f'<tr class="dismissed">{module_td}'
+            f"<td>{loc_html}</td>"
+            f"<td>{d.line if d.line else '&mdash;'}</td>"
+            f"<td><code>{html.escape(d.rule)}</code></td>"
+            f"<td>{html.escape(d.reason) or '&mdash;'}</td>"
+            f"<td>{html.escape(d.comment) or '&mdash;'}</td></tr>"
+        )
+    return (
+        f"<h2>Dismissed findings ({len(dismissed)})</h2>"
+        f"<table><thead><tr>{module_th}<th>File</th><th>Line</th><th>Rule</th>"
+        "<th>Dismissal reason</th><th>Comment</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
 
 
 def render_findings_html(
@@ -179,6 +279,7 @@ def render_findings_html(
     generated_at: str,
     repo_url: str,
     show_module_column: bool,
+    dismissed: Optional[List[DismissedAlert]] = None,
 ) -> str:
     head = (
         "<!DOCTYPE html>\n"
@@ -189,8 +290,16 @@ def render_findings_html(
         f'<div class="meta"><code>{html.escape(ref)}</code> @ '
         f"<code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
     )
+    dismissed_html = _dismissed_table_html(
+        dismissed or [], repo_url, commit, show_module_column
+    )
     if not findings:
-        return head + '<div class="clean">No CodeQL findings. Clean.</div></body></html>\n'
+        return (
+            head
+            + '<div class="clean">No active CodeQL findings. Clean.</div>'
+            + dismissed_html
+            + "</body></html>\n"
+        )
 
     module_th = "<th>Module</th>" if show_module_column else ""
     rows = []
@@ -213,7 +322,9 @@ def render_findings_html(
         head
         + f"<table><thead><tr>{module_th}<th>File</th><th>Line</th><th>Rule</th>"
         "<th>Severity</th><th>Message</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table></body></html>\n"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        + dismissed_html
+        + "</body></html>\n"
     )
 
 
@@ -239,6 +350,10 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--codeql-subdirectory", default="codeql")
     parser.add_argument("--repo-url", default="", help="e.g. https://github.com/org/repo")
+    parser.add_argument(
+        "--dismissed-alerts", type=Path, default=None,
+        help="JSON list of dismissed alerts from fetch_dismissed_alerts.py",
+    )
     parser.add_argument("--ref", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--generated-at", default=None)
@@ -262,17 +377,24 @@ def main(argv=None) -> int:
         print("codeql_findings: no SARIF files found", file=sys.stderr)
         return 2
 
-    findings = parse_sarif_files(sarif_files, module_paths)
+    all_findings = parse_sarif_files(sarif_files, module_paths)
+    dismissed = load_dismissed_alerts(args.dismissed_alerts, module_paths)
+    findings = filter_dismissed(all_findings, dismissed)
     by_module: dict[Optional[str], list[Finding]] = defaultdict(list)
     for f in findings:
         by_module[f.module].append(f)
+    dismissed_by_module: dict[Optional[str], list[DismissedAlert]] = defaultdict(list)
+    for d in dismissed:
+        dismissed_by_module[d.module].append(d)
 
     for mod in module_paths:
         mod_findings = by_module.get(mod, [])
+        mod_dismissed = dismissed_by_module.get(mod, [])
         out_dir = dest / mod / subdir
         _clean_dir(out_dir)
         (out_dir / "summary.json").write_text(
-            json.dumps(summarize(mod_findings), indent=2) + "\n", encoding="utf-8"
+            json.dumps(summarize(mod_findings, len(mod_dismissed)), indent=2) + "\n",
+            encoding="utf-8",
         )
         (out_dir / "index.html").write_text(
             render_findings_html(
@@ -283,6 +405,7 @@ def main(argv=None) -> int:
                 generated_at=generated_at,
                 repo_url=args.repo_url,
                 show_module_column=False,
+                dismissed=mod_dismissed,
             ),
             encoding="utf-8",
         )
@@ -290,7 +413,7 @@ def main(argv=None) -> int:
     global_dir = dest / subdir
     _clean_dir(global_dir)
     (global_dir / "summary.json").write_text(
-        json.dumps(summarize(findings), indent=2) + "\n", encoding="utf-8"
+        json.dumps(summarize(findings, len(dismissed)), indent=2) + "\n", encoding="utf-8"
     )
     (global_dir / "index.html").write_text(
         render_findings_html(
@@ -301,14 +424,16 @@ def main(argv=None) -> int:
             generated_at=generated_at,
             repo_url=args.repo_url,
             show_module_column=True,
+            dismissed=dismissed,
         ),
         encoding="utf-8",
     )
 
     unmapped = len(by_module.get(None, []))
     print(
-        f"codeql_findings: {len(findings)} findings across {len(module_paths)} modules "
-        f"({unmapped} outside any module)",
+        f"codeql_findings: {len(findings)} active findings across {len(module_paths)} "
+        f"modules ({unmapped} outside any module; "
+        f"{len(all_findings) - len(findings)} dismissed)",
         file=sys.stderr,
     )
     return 0

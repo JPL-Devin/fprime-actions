@@ -24,9 +24,13 @@ action on push events.
 ```yaml
 permissions:
   contents: write
+  security-events: read
 ```
 
-`contents: write` is needed to push commits to the baseline branch.
+`contents: write` is needed to push commits to the baseline branch;
+`security-events: read` lets the action fetch alerts dismissed in the
+GitHub UI so they are excluded from the published tables (omit it, or set
+`github-token: ""`, to skip dismissal filtering).
 
 ## Conflict avoidance
 
@@ -51,14 +55,21 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
 2. Parses the SARIF files, normalizing severities to error / medium / low
    (CodeQL `security-severity` >= 7.0 is error, >= 4.0 medium, else low;
    otherwise SARIF level error/warning/note maps to error/medium/low).
-3. Maps each finding to its owning module by longest-prefix path match;
+3. Fetches alerts **dismissed in the GitHub UI** (one paginated
+   code-scanning API call per publish, `state=dismissed`) and subtracts
+   them from the active findings, matched on rule + path with a small
+   line-drift tolerance. Dismissed findings are listed in a separate table
+   (file, line, rule, dismissal reason, comment) and counted in
+   `summary.json` as `dismissed`; tiers use active findings only. API
+   failures degrade gracefully to unfiltered SARIF with a warning.
+4. Maps each finding to its owning module by longest-prefix path match;
    findings outside every module appear only on the global page.
-4. Writes `<mod>/codeql/index.html` (findings table with source deep links)
+5. Writes `<mod>/codeql/index.html` (findings table with source deep links)
    and `<mod>/codeql/summary.json` for every module (clean modules get a
    "clean" page), plus a global `codeql/` entry.
-5. Regenerates the top-level checklist `index.html` + `catalog.json`
+6. Regenerates the top-level checklist `index.html` + `catalog.json`
    (schema v2) with platinum/gold/silver/bronze badges.
-6. Commits and pushes via the shared retrying publish helper.
+7. Commits and pushes via the shared retrying publish helper.
 
 ## Badge tiers
 
@@ -95,6 +106,7 @@ older action versions.
 | `baseline-branch-prefix` | `coverage` | Prefix applied to `<ref-name>` to form the baseline branch.        |
 | `codeql-subdirectory`    | `codeql`   | Subdirectory under each module holding CodeQL findings.            |
 | `config-file`            | `.github/module-checklist.yml` | Checklist config file in the repo. Defaults apply when missing. |
+| `github-token`           | `${{ github.token }}` | Token for fetching dismissed alerts (`security-events: read`). Empty skips dismissal filtering. |
 
 ## Outputs
 
@@ -111,6 +123,7 @@ older action versions.
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      security-events: read
     concurrency:
       group: baseline-publish-${{ github.ref }}
       cancel-in-progress: false

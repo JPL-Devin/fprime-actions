@@ -29,6 +29,7 @@ import compare  # noqa: E402
 import mirror  # noqa: E402
 import catalog  # noqa: E402
 import codeql_findings  # noqa: E402
+import fetch_dismissed_alerts  # noqa: E402
 from _summary import Summary, load_summary  # noqa: E402
 from _config import coverage_thresholds, load_config  # noqa: E402
 from _tiers import CoverageThresholds, codeql_tier, coverage_tier, normalize_severity  # noqa: E402
@@ -428,6 +429,86 @@ def _sample_sarif(tmp: Path) -> Path:
     return path
 
 
+def test_dismissed_alerts_excluded_and_tabulated():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        dest = tmp / "dest"
+        dest.mkdir()
+        sarif = _sample_sarif(tmp)
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+            {"path": "Drv/I2c", "has_ut": True},
+        ])
+        # Dismissed in the UI: same rule/path, line drifted by 2 (within tolerance)
+        dismissed = tmp / "dismissed.json"
+        dismissed.write_text(json.dumps([
+            {"rule": "cpp/high-risk", "path": "Svc/CmdDispatcher/CmdDispatcher.cpp",
+             "line": 44, "reason": "won't fix", "comment": "accepted risk per review"},
+        ]), encoding="utf-8")
+
+        rc = codeql_findings.main([
+            "--sarif", str(sarif),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--repo-url", "https://github.com/org/repo",
+            "--dismissed-alerts", str(dismissed),
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+            "--generated-at", "2026-05-18T17:30:00Z",
+        ])
+        assert rc == 0
+
+        # The dismissed finding no longer counts against the module's tier
+        cmd = json.loads((dest / "Svc/CmdDispatcher/codeql/summary.json").read_text())
+        assert cmd["findings"] == 0
+        assert cmd["tier"] == "platinum"
+        assert cmd["dismissed"] == 1
+
+        # ...but appears in the dismissed table with reason and comment
+        page = (dest / "Svc/CmdDispatcher/codeql/index.html").read_text()
+        assert "Dismissed findings (1)" in page
+        assert "won&#x27;t fix" in page
+        assert "accepted risk per review" in page
+        assert "No active CodeQL findings" in page
+
+        # Unaffected module keeps its active finding and has no dismissed table
+        i2c = json.loads((dest / "Drv/I2c/codeql/summary.json").read_text())
+        assert i2c["findings"] == 1
+        assert i2c["dismissed"] == 0
+        assert "Dismissed findings" not in (dest / "Drv/I2c/codeql/index.html").read_text()
+
+        # Global rollup reflects the subtraction
+        top = json.loads((dest / "codeql/summary.json").read_text())
+        assert top["findings"] == 2  # 3 in SARIF minus 1 dismissed
+        assert top["dismissed"] == 1
+
+        # Out-of-tolerance line drift does NOT match
+        f = codeql_findings.Finding(
+            path="Svc/CmdDispatcher/CmdDispatcher.cpp", line=60, rule="cpp/high-risk",
+            severity="error", message="m", module="Svc/CmdDispatcher")
+        d = codeql_findings.load_dismissed_alerts(dismissed, ["Svc/CmdDispatcher"])
+        assert codeql_findings.filter_dismissed([f], d) == [f]
+
+
+def test_fetch_dismissed_alerts_extract():
+    alerts = [
+        {
+            "rule": {"id": "cpp/high-risk"},
+            "most_recent_instance": {
+                "location": {"path": "Fw/Foo/Bar.cpp", "start_line": 12}
+            },
+            "dismissed_reason": "false positive",
+            "dismissed_comment": "autocoded region",
+        },
+        {"rule": {}, "most_recent_instance": {}},  # malformed -> skipped
+    ]
+    out = fetch_dismissed_alerts.extract(alerts)
+    assert out == [{
+        "rule": "cpp/high-risk", "path": "Fw/Foo/Bar.cpp", "line": 12,
+        "reason": "false positive", "comment": "autocoded region",
+    }]
+
+
 def test_codeql_findings_per_module_pages_and_summaries():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -682,6 +763,8 @@ TESTS = [
     test_config_loading,
     test_catalog_groups_and_rollup,
     test_codeql_findings_per_module_pages_and_summaries,
+    test_dismissed_alerts_excluded_and_tabulated,
+    test_fetch_dismissed_alerts_extract,
     test_codeql_findings_idempotent_rerun_clears_stale,
     test_catalog_merges_codeql_and_coverage,
     test_compare_flags_regression_and_new_module,

@@ -1,0 +1,77 @@
+"""Badge-tier computation shared by the catalog and CodeQL scripts.
+
+Tiers (best to worst): platinum, gold, silver, bronze.
+
+Coverage tiers are driven by line-coverage percent -- the same metric the
+delta detector (``compare.py``) uses for its regression gate -- against
+configurable thresholds.  Modules with no coverage data are bronze.
+
+CodeQL tiers are driven by the worst finding severity:
+    * no findings          -> platinum (gold is also "no findings"; the
+                              distinction is reserved for future criteria,
+                              so today a clean module earns platinum)
+    * worst is low/note    -> silver
+    * worst is medium or
+      error/high/critical  -> bronze
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+TIERS = ("platinum", "gold", "silver", "bronze")
+
+#: Normalized severity buckets, ordered worst-first.
+SEVERITY_ORDER = ("error", "medium", "low")
+
+
+@dataclass(frozen=True)
+class CoverageThresholds:
+    """Line-coverage percentage cut-offs for each tier."""
+
+    platinum: float = 95.0
+    gold: float = 90.0
+    silver: float = 80.0
+
+
+def coverage_tier(line_pct: float, has_coverage: bool, thresholds: CoverageThresholds) -> str:
+    if not has_coverage:
+        return "bronze"
+    if line_pct >= thresholds.platinum:
+        return "platinum"
+    if line_pct >= thresholds.gold:
+        return "gold"
+    if line_pct >= thresholds.silver:
+        return "silver"
+    return "bronze"
+
+
+def normalize_severity(level: str, security_severity: float | None = None) -> str:
+    """Collapse SARIF levels / security severities into error, medium, or low.
+
+    ``security_severity`` (CodeQL's ``security-severity`` rule property,
+    0.0-10.0) takes precedence when provided: >= 7.0 is error (high/critical),
+    >= 4.0 is medium, below is low.  Otherwise the SARIF ``level`` maps
+    error -> error, warning -> medium, note/none -> low.
+    """
+    if security_severity is not None:
+        if security_severity >= 7.0:
+            return "error"
+        if security_severity >= 4.0:
+            return "medium"
+        return "low"
+    level = (level or "").lower()
+    if level == "error":
+        return "error"
+    if level == "warning":
+        return "medium"
+    return "low"
+
+
+def codeql_tier(worst_severity: str | None) -> str:
+    """Map the worst normalized severity in a module to a tier."""
+    if worst_severity is None:
+        return "platinum"
+    if worst_severity == "low":
+        return "silver"
+    return "bronze"

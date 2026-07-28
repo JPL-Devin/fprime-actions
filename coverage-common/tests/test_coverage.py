@@ -28,7 +28,9 @@ import discover  # noqa: E402
 import compare  # noqa: E402
 import mirror  # noqa: E402
 import catalog  # noqa: E402
+import codeql_findings  # noqa: E402
 from _summary import Summary, load_summary  # noqa: E402
+from _tiers import CoverageThresholds, codeql_tier, coverage_tier, normalize_severity  # noqa: E402
 
 
 def _make_module(root: Path, path: str, *, with_ut: bool = True) -> Path:
@@ -206,6 +208,41 @@ def test_mirror_module_is_idempotent():
         assert (dest / mod_path / "coverage" / "summary.json").is_file()
 
 
+def _mirror_all(source: Path, dest: Path, records: list[dict]) -> None:
+    """Mirror module + global coverage from source into dest (baseline tree)."""
+    mirror.mirror_global(source=source, dest=dest, subdir="coverage")
+    for rec in records:
+        mirror.mirror_module(
+            source=source, dest=dest, module_path=rec["path"],
+            has_ut=rec["has_ut"], subdir="coverage",
+        )
+
+
+def test_tier_computation():
+    thresholds = CoverageThresholds()
+    assert coverage_tier(98.0, True, thresholds) == "platinum"
+    assert coverage_tier(95.0, True, thresholds) == "platinum"
+    assert coverage_tier(92.0, True, thresholds) == "gold"
+    assert coverage_tier(85.0, True, thresholds) == "silver"
+    assert coverage_tier(60.0, True, thresholds) == "bronze"
+    assert coverage_tier(100.0, False, thresholds) == "bronze"  # no coverage is bronze
+    custom = CoverageThresholds(platinum=99.0, gold=97.0, silver=50.0)
+    assert coverage_tier(98.0, True, custom) == "gold"
+    assert coverage_tier(60.0, True, custom) == "silver"
+
+    assert codeql_tier(None) == "platinum"
+    assert codeql_tier("low") == "silver"
+    assert codeql_tier("medium") == "bronze"
+    assert codeql_tier("error") == "bronze"
+
+    assert normalize_severity("error") == "error"
+    assert normalize_severity("warning") == "medium"
+    assert normalize_severity("note") == "low"
+    assert normalize_severity("", 9.1) == "error"
+    assert normalize_severity("note", 5.0) == "medium"
+    assert normalize_severity("error", 2.0) == "low"
+
+
 def test_catalog_groups_and_rollup():
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
@@ -218,19 +255,19 @@ def test_catalog_groups_and_rollup():
         _place_coverage(_make_module(source, "Drv/I2c"), "summary_low.json")
         _make_module(source, "Drv/LinuxGpio", with_ut=False)
         # Global --all run
-        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage" / "summary.json") if (source / "coverage").exists() else None
         (source / "coverage").mkdir(exist_ok=True)
         shutil.copy2(FIXTURES / "summary_high.json", source / "coverage" / "summary.json")
 
-        modules_jsonl = _modules_jsonl([
+        records = [
             {"path": "Svc/CmdDispatcher", "has_ut": True},
             {"path": "Svc/Health", "has_ut": True},
             {"path": "Drv/I2c", "has_ut": True},
             {"path": "Drv/LinuxGpio", "has_ut": False},
-        ])
+        ]
+        modules_jsonl = _modules_jsonl(records)
+        _mirror_all(source, dest, records)
 
         rc = catalog.main([
-            "--source", str(source),
             "--dest", str(dest),
             "--modules-jsonl", str(modules_jsonl),
             "--coverage-subdirectory", "coverage",
@@ -242,32 +279,239 @@ def test_catalog_groups_and_rollup():
         assert rc == 0
 
         cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
-        assert cat_doc["schema"] == 1
+        assert cat_doc["schema"] == 2
         assert cat_doc["ref"] == "devel"
         assert cat_doc["commit"] == "deadbeefcafe1234"
+        assert cat_doc["thresholds"] == {"platinum": 95.0, "gold": 90.0, "silver": 80.0}
         assert len(cat_doc["modules"]) == 4
         by_path = {m["path"]: m for m in cat_doc["modules"]}
         assert by_path["Drv/LinuxGpio"]["has_coverage"] is False
         assert by_path["Drv/LinuxGpio"]["has_ut"] is False
-        assert by_path["Svc/CmdDispatcher"]["line_pct"] == 98.0
-        assert by_path["Svc/CmdDispatcher"]["function_pct"] == 93.33
+        assert by_path["Drv/LinuxGpio"]["tiers"]["ut"] == "bronze"  # no coverage is bronze
+        assert by_path["Svc/CmdDispatcher"]["ut"]["line_pct"] == 98.0
+        assert by_path["Svc/CmdDispatcher"]["ut"]["function_pct"] == 93.33
+        assert by_path["Svc/CmdDispatcher"]["tiers"]["ut"] == "platinum"
+        assert by_path["Svc/CmdDispatcher"]["tiers"]["codeql"] is None  # not published yet
+        assert by_path["Svc/CmdDispatcher"]["int"] is None  # int coverage deferred
         # Overall came from a high fixture
         assert cat_doc["overall"]["line_pct"] == 98.0
-        assert cat_doc["overall"]["function_pct"] == 93.33
+        assert cat_doc["overall"]["tier"] == "platinum"
+        assert cat_doc["overall_codeql"] is None
 
         index_html = (dest / "index.html").read_text(encoding="utf-8")
-        # Spot-check structure
+        # Spot-check structure: checklist columns and tier badges
         assert "<details" in index_html and "Svc/" in index_html and "Drv/" in index_html
         assert "Svc/CmdDispatcher" in index_html
         assert "Drv/LinuxGpio" in index_html
-        assert "(no UT)" in index_html
-        # All three coverage columns present
-        assert ">Line</th>" in index_html
-        assert ">Function</th>" in index_html
-        assert ">Branch</th>" in index_html
-        # Color classes applied
-        assert "pct-green" in index_html
-        assert "pct-red" in index_html
+        assert ">UT Coverage</th>" in index_html
+        assert ">INT Coverage</th>" in index_html
+        assert ">CodeQL</th>" in index_html
+        assert "badge-platinum" in index_html
+        assert "badge-bronze" in index_html
+        assert "no UT" in index_html
+
+
+def _sample_sarif(tmp: Path) -> Path:
+    sarif = {
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "CodeQL",
+                        "rules": [
+                            {
+                                "id": "cpp/high-risk",
+                                "properties": {"security-severity": "8.8"},
+                            },
+                            {
+                                "id": "cpp/style-note",
+                                "defaultConfiguration": {"level": "note"},
+                            },
+                        ],
+                    }
+                },
+                "results": [
+                    {
+                        "ruleId": "cpp/high-risk",
+                        "level": "warning",
+                        "message": {"text": "Dangerous thing."},
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {"uri": "Svc/CmdDispatcher/CmdDispatcher.cpp"},
+                                    "region": {"startLine": 42},
+                                }
+                            }
+                        ],
+                    },
+                    {
+                        "ruleId": "cpp/style-note",
+                        "level": "",
+                        "message": {"text": "Minor style thing."},
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {"uri": "Drv/I2c/I2c.cpp"},
+                                    "region": {"startLine": 7},
+                                }
+                            }
+                        ],
+                    },
+                    {
+                        "ruleId": "cpp/style-note",
+                        "level": "note",
+                        "message": {"text": "Outside any module."},
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {"uri": "cmake/helper.cpp"},
+                                    "region": {"startLine": 3},
+                                }
+                            }
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    path = tmp / "cpp.sarif"
+    path.write_text(json.dumps(sarif), encoding="utf-8")
+    return path
+
+
+def test_codeql_findings_per_module_pages_and_summaries():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        dest = tmp / "dest"
+        dest.mkdir()
+        sarif = _sample_sarif(tmp)
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+            {"path": "Drv/I2c", "has_ut": True},
+            {"path": "Fw/Clean", "has_ut": True},
+        ])
+
+        rc = codeql_findings.main([
+            "--sarif", str(sarif),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--repo-url", "https://github.com/org/repo",
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+            "--generated-at", "2026-05-18T17:30:00Z",
+        ])
+        assert rc == 0
+
+        # Module with a high-severity finding -> error/bronze
+        cmd = json.loads((dest / "Svc/CmdDispatcher/codeql/summary.json").read_text())
+        assert cmd["findings"] == 1
+        assert cmd["worst"] == "error"  # security-severity 8.8 overrides SARIF warning
+        assert cmd["tier"] == "bronze"
+        page = (dest / "Svc/CmdDispatcher/codeql/index.html").read_text()
+        assert "cpp/high-risk" in page
+        assert "Dangerous thing." in page
+        assert "blob/deadbeefcafe1234/Svc/CmdDispatcher/CmdDispatcher.cpp#L42" in page
+
+        # Module with a note-level finding -> low/silver
+        i2c = json.loads((dest / "Drv/I2c/codeql/summary.json").read_text())
+        assert i2c["findings"] == 1
+        assert i2c["worst"] == "low"
+        assert i2c["tier"] == "silver"
+
+        # Clean module -> platinum with clean page
+        clean = json.loads((dest / "Fw/Clean/codeql/summary.json").read_text())
+        assert clean["findings"] == 0
+        assert clean["worst"] is None
+        assert clean["tier"] == "platinum"
+        assert "Clean" in (dest / "Fw/Clean/codeql/index.html").read_text()
+
+        # Global page includes everything, incl. the unmapped finding
+        glob = json.loads((dest / "codeql/summary.json").read_text())
+        assert glob["findings"] == 3
+        global_page = (dest / "codeql/index.html").read_text()
+        assert "(other)" in global_page
+        assert "cmake/helper.cpp" in global_page
+
+
+def test_codeql_findings_idempotent_rerun_clears_stale():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        dest = tmp / "dest"
+        dest.mkdir()
+        sarif = _sample_sarif(tmp)
+        modules_jsonl = _modules_jsonl([{"path": "Svc/CmdDispatcher", "has_ut": True}])
+        argv = [
+            "--sarif", str(sarif),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+        ]
+        assert codeql_findings.main(argv) == 0
+        stale = dest / "Svc/CmdDispatcher/codeql/stale.html"
+        stale.write_text("stale", encoding="utf-8")
+        assert codeql_findings.main(argv) == 0
+        assert not stale.exists()
+
+
+def test_catalog_merges_codeql_and_coverage():
+    """Simulate the two-writer flow: coverage publishes, then codeql publishes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        source = tmp / "src"
+        dest = tmp / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        _place_coverage(_make_module(source, "Svc/CmdDispatcher"), "summary_high.json")
+        _place_coverage(_make_module(source, "Drv/I2c"), "summary_low.json")
+        (source / "coverage").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage" / "summary.json")
+
+        records = [
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+            {"path": "Drv/I2c", "has_ut": True},
+        ]
+        modules_jsonl = _modules_jsonl(records)
+        _mirror_all(source, dest, records)
+
+        catalog_argv = [
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--ref-type", "branch",
+            "--commit", "deadbeefcafe1234",
+            "--generated-at", "2026-05-18T17:30:00Z",
+        ]
+        assert catalog.main(catalog_argv) == 0
+
+        # Second writer: codeql publishes into the same tree, regenerates catalog
+        sarif = _sample_sarif(tmp)
+        assert codeql_findings.main([
+            "--sarif", str(sarif),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+        ]) == 0
+        assert catalog.main(catalog_argv) == 0
+
+        cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
+        by_path = {m["path"]: m for m in cat_doc["modules"]}
+        # Coverage data survived the codeql pass
+        assert by_path["Svc/CmdDispatcher"]["ut"]["line_pct"] == 98.0
+        assert by_path["Svc/CmdDispatcher"]["tiers"]["ut"] == "platinum"
+        # CodeQL data present
+        assert by_path["Svc/CmdDispatcher"]["codeql"]["findings"] == 1
+        assert by_path["Svc/CmdDispatcher"]["tiers"]["codeql"] == "bronze"
+        assert by_path["Drv/I2c"]["tiers"]["codeql"] == "silver"
+        assert cat_doc["overall_codeql"]["findings"] == 3
+
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert "badge-silver" in index_html
+        assert "1 finding" in index_html
+        assert "codeql/index.html" in index_html
 
 
 def test_compare_flags_regression_and_new_module():
@@ -385,7 +629,11 @@ TESTS = [
     test_catalog_relative_path_math,
     test_mirror_flatten_drops_coverage_subdir,
     test_mirror_module_is_idempotent,
+    test_tier_computation,
     test_catalog_groups_and_rollup,
+    test_codeql_findings_per_module_pages_and_summaries,
+    test_codeql_findings_idempotent_rerun_clears_stale,
+    test_catalog_merges_codeql_and_coverage,
     test_compare_flags_regression_and_new_module,
     test_compare_baseline_missing_reports_no_baseline,
 ]

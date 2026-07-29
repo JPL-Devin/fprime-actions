@@ -35,7 +35,14 @@ from _config import coverage_thresholds, load_config  # noqa: E402
 from _tiers import CoverageThresholds, codeql_tier, coverage_tier, normalize_severity  # noqa: E402
 
 
-def _make_module(root: Path, path: str, *, with_ut: bool = True, register: str = "register_fprime_module") -> Path:
+def _make_module(
+    root: Path,
+    path: str,
+    *,
+    with_ut: bool = True,
+    with_cpp: bool = True,
+    register: str = "register_fprime_module",
+) -> Path:
     """Create a fake F´ module dir with a CMakeLists.txt that triggers discovery."""
     mod_dir = root / path
     mod_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +50,8 @@ def _make_module(root: Path, path: str, *, with_ut: bool = True, register: str =
     if with_ut:
         body.append("register_fprime_ut()")
     (mod_dir / "CMakeLists.txt").write_text("\n".join(body) + "\n", encoding="utf-8")
+    if with_cpp:
+        (mod_dir / "Foo.cpp").write_text("int foo() { return 0; }\n", encoding="utf-8")
     return mod_dir
 
 
@@ -85,10 +94,10 @@ def test_discover_finds_modules_and_ut_flag():
         )
 
         result = sorted(discover.discover(root))
-        assert ("Drv/LinuxGpio", False) in result, result
-        assert ("Svc/CmdDispatcher", True) in result, result
-        assert ("Fw/Cmd", True) in result, result
-        assert not any(p.startswith("Decoy") for p, _ in result), result
+        assert ("Drv/LinuxGpio", False, True) in result, result
+        assert ("Svc/CmdDispatcher", True, True) in result, result
+        assert ("Fw/Cmd", True, True) in result, result
+        assert not any(p.startswith("Decoy") for p, _, _ in result), result
 
 
 def test_discover_finds_library_modules():
@@ -99,8 +108,47 @@ def test_discover_finds_library_modules():
         _make_module(root, "Some/Lib", with_ut=False, register="register_fprime_library")
 
         result = sorted(discover.discover(root))
-        assert ("Utils/Hash", True) in result, result
-        assert ("Some/Lib", False) in result, result
+        assert ("Utils/Hash", True, True) in result, result
+        assert ("Some/Lib", False, True) in result, result
+
+
+def test_discover_excludes_autocoder_only_modules_by_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _make_module(root, "Svc/CmdDispatcher", with_ut=True)
+        # Autocoder-only: registers a module but has no C/C++ source (FPP only)
+        ports = _make_module(root, "Fw/TypesOnly", with_ut=False, with_cpp=False)
+        (ports / "Types.fpp").write_text("module Fw {}\n", encoding="utf-8")
+        # Parent whose only C++ lives in a nested module is autocoder-only too
+        _make_module(root, "Svc/Parent", with_ut=False, with_cpp=False)
+        _make_module(root, "Svc/Parent/Child", with_ut=False)
+
+        result = sorted(discover.discover(root))
+        assert ("Fw/TypesOnly", False, False) in result, result
+        assert ("Svc/Parent", False, False) in result, result
+        assert ("Svc/Parent/Child", False, True) in result, result
+
+        # CLI: excluded by default, included with --include-autocoder-only
+        import io as _io
+        from contextlib import redirect_stdout
+
+        def run(argv):
+            out = _io.StringIO()
+            with redirect_stdout(out), redirect_stderr(_io.StringIO()):
+                assert discover.main(argv) == 0
+            return [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+
+        default_paths = {r["path"] for r in run(["--root", str(root)])}
+        assert "Fw/TypesOnly" not in default_paths
+        assert "Svc/Parent" not in default_paths
+        assert {"Svc/CmdDispatcher", "Svc/Parent/Child"} <= default_paths
+
+        all_records = run(["--root", str(root), "--include-autocoder-only"])
+        all_paths = {r["path"] for r in all_records}
+        assert {"Fw/TypesOnly", "Svc/Parent"} <= all_paths
+        by_path = {r["path"]: r for r in all_records}
+        assert by_path["Fw/TypesOnly"]["has_cpp"] is False
+        assert by_path["Svc/CmdDispatcher"]["has_cpp"] is True
 
 
 def test_discover_ignores_commented_out_calls():
@@ -328,7 +376,7 @@ def test_catalog_groups_and_rollup():
         assert rc == 0
 
         cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
-        assert cat_doc["schema"] == 2
+        assert cat_doc["schema"] == 3
         assert cat_doc["ref"] == "devel"
         assert cat_doc["commit"] == "deadbeefcafe1234"
         assert cat_doc["thresholds"] == {"platinum": 95.0, "gold": 90.0, "silver": 80.0}
@@ -507,6 +555,41 @@ def test_dismissed_alerts_excluded_and_tabulated():
             path="Svc/CmdDispatcher/CmdDispatcher.cpp", line=200, rule="cpp/high-risk",
             severity="error", message="Dangerous thing.", module="Svc/CmdDispatcher")
         assert codeql_findings.filter_dismissed([f2], d) == []
+
+
+def test_dismissal_matching_is_one_to_one():
+    """One UI dismissal must not swallow every same-rule finding in a file.
+
+    Regression: repos with many findings per rule per file reported
+    everything as dismissed ("clean") because a single dismissed alert
+    matched all of them.
+    """
+    path = "Svc/CmdDispatcher/CmdDispatcher.cpp"
+    def f(line, msg="Avoid magic numbers."):
+        return codeql_findings.Finding(
+            path=path, line=line, rule="cpp/fprime/magic-numbers",
+            severity="medium", message=msg, module="Svc/CmdDispatcher")
+    def d(line, msg="Avoid magic numbers."):
+        return codeql_findings.DismissedAlert(
+            path=path, line=line, rule="cpp/fprime/magic-numbers",
+            message=msg, reason="won't fix", comment="", module="Svc/CmdDispatcher")
+
+    # Three identical-message findings, one dismissal: two stay active,
+    # and the dismissal claims the closest (exact-line) finding.
+    findings = [f(10), f(50), f(90)]
+    active, detected = codeql_findings.partition_dismissed(findings, [d(50)])
+    assert active == [f(10), f(90)]
+    assert len(detected) == 1
+
+    # Two dismissals -> two claimed, one active.
+    active, detected = codeql_findings.partition_dismissed(findings, [d(50), d(11)])
+    assert active == [f(90)]
+    assert len(detected) == 2
+
+    # A dismissal with no line info claims only one finding, not all.
+    active, detected = codeql_findings.partition_dismissed(
+        [f(10, "msg A"), f(50, "msg B")], [d(0, "")])
+    assert len(active) == 1 and len(detected) == 1
 
 
 def test_stale_dismissed_alerts_not_shown():
@@ -720,6 +803,69 @@ def test_catalog_merges_codeql_and_coverage():
         assert "codeql/index.html" in index_html
 
 
+def test_catalog_multiple_codeql_checks():
+    """Two codeql publishers (e.g. security + jpl-standard) coexist and roll up."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        dest = tmp / "dest"
+        dest.mkdir()
+        sarif = _sample_sarif(tmp)
+        modules_jsonl = _modules_jsonl([
+            {"path": "Svc/CmdDispatcher", "has_ut": True},
+            {"path": "Drv/I2c", "has_ut": True},
+        ])
+
+        common = [
+            "--sarif", str(sarif),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+        ]
+        assert codeql_findings.main(
+            common + ["--codeql-subdirectory", "codeql", "--check-label", "CodeQL Security"]
+        ) == 0
+        assert codeql_findings.main(
+            common + ["--codeql-subdirectory", "codeql-jpl", "--check-label", "CodeQL JPL Standard"]
+        ) == 0
+
+        assert catalog.main([
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--ref-type", "branch",
+            "--commit", "deadbeefcafe1234",
+            "--generated-at", "2026-05-18T17:30:00Z",
+        ]) == 0
+
+        cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
+        by_path = {m["path"]: m for m in cat_doc["modules"]}
+        cmd = by_path["Svc/CmdDispatcher"]
+        # Aggregate sums both checks (same SARIF published twice -> 2 findings)
+        assert cmd["codeql"]["findings"] == 2
+        assert set(cmd["codeql_checks"]) == {"codeql", "codeql-jpl"}
+        assert cmd["codeql_checks"]["codeql"]["findings"] == 1
+        assert cmd["codeql_checks"]["codeql"]["label"] == "CodeQL Security"
+        assert cmd["codeql_checks"]["codeql-jpl"]["label"] == "CodeQL JPL Standard"
+        assert cat_doc["overall_codeql"]["findings"] == 6
+        assert cat_doc["overall_codeql_checks"]["codeql"]["findings"] == 3
+
+        # Landing page lists each check in the header strip
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert "CodeQL Security:" in index_html
+        assert "CodeQL JPL Standard:" in index_html
+
+        # Per-module roll-up page has one row per check
+        mod_page = (dest / "Svc/CmdDispatcher/index.html").read_text(encoding="utf-8")
+        assert ">CodeQL Security</td>" in mod_page
+        assert ">CodeQL JPL Standard</td>" in mod_page
+        assert 'href="codeql/index.html"' in mod_page
+        assert 'href="codeql-jpl/index.html"' in mod_page
+
+        # Main index module row links to the roll-up page for the codeql cell
+        assert 'href="Svc/CmdDispatcher/index.html">2 findings</a>' in index_html
+
+
 def test_compare_flags_regression_and_new_module():
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "src"
@@ -828,6 +974,7 @@ def test_compare_baseline_missing_reports_no_baseline():
 TESTS = [
     test_discover_finds_modules_and_ut_flag,
     test_discover_finds_library_modules,
+    test_discover_excludes_autocoder_only_modules_by_default,
     test_discover_ignores_commented_out_calls,
     test_summary_load_handles_missing_file_and_zero_total,
     test_summary_load_parses_gcovr_json,
@@ -841,10 +988,12 @@ TESTS = [
     test_catalog_groups_and_rollup,
     test_codeql_findings_per_module_pages_and_summaries,
     test_dismissed_alerts_excluded_and_tabulated,
+    test_dismissal_matching_is_one_to_one,
     test_stale_dismissed_alerts_not_shown,
     test_fetch_dismissed_alerts_extract,
     test_codeql_findings_idempotent_rerun_clears_stale,
     test_catalog_merges_codeql_and_coverage,
+    test_catalog_multiple_codeql_checks,
     test_compare_flags_regression_and_new_module,
     test_compare_baseline_missing_reports_no_baseline,
 ]

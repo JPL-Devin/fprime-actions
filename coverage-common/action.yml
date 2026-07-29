@@ -32,6 +32,13 @@ inputs:
       per-module steps.  Useful for diagnosing slow or stuck coverage runs.
     required: false
     default: "false"
+  include-autocoder-modules:
+    description: >
+      When 'true', also list autocoder-only modules (no hand-written C/C++
+      source, e.g. types/ports-only modules) in coverage listings.  Off by
+      default.
+    required: false
+    default: "false"
 outputs:
   modules-jsonl:
     description: "Path to the JSON-Lines file listing discovered modules"
@@ -46,8 +53,13 @@ runs:
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        INCLUDE_AUTOCODER: ${{ inputs.include-autocoder-modules }}
       run: |
-        python3 "${ACTION_PATH}/scripts/discover.py" --root . > modules.jsonl
+        DISCOVER_FLAGS=""
+        if [ "${INCLUDE_AUTOCODER}" = "true" ]; then
+          DISCOVER_FLAGS="--include-autocoder-only"
+        fi
+        python3 "${ACTION_PATH}/scripts/discover.py" --root . ${DISCOVER_FLAGS} > modules.jsonl
         echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
         echo "Discovered $(wc -l < modules.jsonl) modules"
 

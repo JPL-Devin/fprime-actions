@@ -76,6 +76,9 @@ aggregates all checks (summed findings, worst severity).
    rule + path plus either identical message text or a line within a small
    drift tolerance (the alert's `most_recent_instance` is re-anchored by
    GitHub on every upload, so its line tracks the analyzed HEAD closely).
+   Matching is one-to-one: each dismissal cancels at most one finding, so
+   repeated findings of the same rule in a file stay active unless each
+   has its own dismissal.
    Dismissed findings **still detected by the SARIF** are listed in a
    separate table (file, line, rule, dismissal reason, comment) and counted
    in `summary.json` as `dismissed`; stale dismissals no longer found by

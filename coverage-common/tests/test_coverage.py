@@ -557,6 +557,41 @@ def test_dismissed_alerts_excluded_and_tabulated():
         assert codeql_findings.filter_dismissed([f2], d) == []
 
 
+def test_dismissal_matching_is_one_to_one():
+    """One UI dismissal must not swallow every same-rule finding in a file.
+
+    Regression: repos with many findings per rule per file reported
+    everything as dismissed ("clean") because a single dismissed alert
+    matched all of them.
+    """
+    path = "Svc/CmdDispatcher/CmdDispatcher.cpp"
+    def f(line, msg="Avoid magic numbers."):
+        return codeql_findings.Finding(
+            path=path, line=line, rule="cpp/fprime/magic-numbers",
+            severity="medium", message=msg, module="Svc/CmdDispatcher")
+    def d(line, msg="Avoid magic numbers."):
+        return codeql_findings.DismissedAlert(
+            path=path, line=line, rule="cpp/fprime/magic-numbers",
+            message=msg, reason="won't fix", comment="", module="Svc/CmdDispatcher")
+
+    # Three identical-message findings, one dismissal: two stay active,
+    # and the dismissal claims the closest (exact-line) finding.
+    findings = [f(10), f(50), f(90)]
+    active, detected = codeql_findings.partition_dismissed(findings, [d(50)])
+    assert active == [f(10), f(90)]
+    assert len(detected) == 1
+
+    # Two dismissals -> two claimed, one active.
+    active, detected = codeql_findings.partition_dismissed(findings, [d(50), d(11)])
+    assert active == [f(90)]
+    assert len(detected) == 2
+
+    # A dismissal with no line info claims only one finding, not all.
+    active, detected = codeql_findings.partition_dismissed(
+        [f(10, "msg A"), f(50, "msg B")], [d(0, "")])
+    assert len(active) == 1 and len(detected) == 1
+
+
 def test_stale_dismissed_alerts_not_shown():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -953,6 +988,7 @@ TESTS = [
     test_catalog_groups_and_rollup,
     test_codeql_findings_per_module_pages_and_summaries,
     test_dismissed_alerts_excluded_and_tabulated,
+    test_dismissal_matching_is_one_to_one,
     test_stale_dismissed_alerts_not_shown,
     test_fetch_dismissed_alerts_extract,
     test_codeql_findings_idempotent_rerun_clears_stale,

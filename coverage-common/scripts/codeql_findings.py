@@ -24,6 +24,9 @@ fingerprints, which the REST alerts API does not expose; matching here
 requires rule + path and then either identical message text or a line
 within a small drift tolerance (the alert's ``most_recent_instance`` is
 re-anchored by GitHub on every upload, so its line tracks HEAD closely).
+Each dismissed alert cancels at most one finding (one UI dismissal covers a
+single alert), so repeated findings of the same rule in a file stay active
+unless each has its own dismissal.
 
 Like ``mirror.py`` this script is idempotent: it deletes each module's
 codeql directory before writing so re-runs cannot leave stale findings.
@@ -167,27 +170,32 @@ def load_dismissed_alerts(path: Optional[Path], module_paths: List[str]) -> List
     return dismissed
 
 
-def _matches(finding: "Finding", d: DismissedAlert) -> bool:
+def _match_score(finding: "Finding", d: DismissedAlert) -> Optional[int]:
+    """Rank how well a dismissed alert matches a finding (lower is better).
+
+    ``None`` means no match.  Rule and path must agree; then exact line,
+    identical message text, and line drift within tolerance are accepted
+    in decreasing order of confidence.
+    """
     if d.rule != finding.rule or d.path != finding.path:
-        return False
-    if d.message and d.message == finding.message.strip():
-        return True
+        return None
+    same_msg = bool(d.message) and d.message == finding.message.strip()
+    if d.line and finding.line and d.line == finding.line:
+        return 0 if same_msg else 1
+    if same_msg:
+        return 2
     if d.line == 0 or finding.line == 0:
-        return True
-    return abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE
-
-
-def _is_dismissed(finding: "Finding", dismissed: List[DismissedAlert]) -> bool:
-    return any(_matches(finding, d) for d in dismissed)
+        return 4
+    if abs(d.line - finding.line) <= DISMISS_LINE_TOLERANCE:
+        return 3
+    return None
 
 
 def filter_dismissed(
     findings: List[Finding], dismissed: List[DismissedAlert]
 ) -> List[Finding]:
     """Active findings only: subtract anything matching a dismissed alert."""
-    if not dismissed:
-        return findings
-    return [f for f in findings if not _is_dismissed(f, dismissed)]
+    return partition_dismissed(findings, dismissed)[0]
 
 
 def partition_dismissed(
@@ -195,24 +203,38 @@ def partition_dismissed(
 ) -> tuple[List[Finding], List[DismissedAlert]]:
     """Split SARIF findings against the dismissed-alert list.
 
-    Returns ``(active, detected_dismissed)``: findings not matching any
-    dismissed alert, and dismissed alerts matched by at least one finding.
-    Dismissed alerts that no finding matches are stale (the scan no longer
-    detects them) and are dropped from both outputs.
+    Matching is one-to-one: each dismissed alert cancels at most one
+    finding (each UI dismissal covers a single alert), best matches
+    first, so several findings of the same rule in one file cannot all
+    be swallowed by a single dismissal.
+
+    Returns ``(active, detected_dismissed)``: findings not claimed by a
+    dismissed alert, and dismissed alerts matched to a finding.
+    Dismissed alerts that no finding matches are stale (the scan no
+    longer detects them) and are dropped from both outputs.
     """
     if not dismissed:
         return findings, []
-    active: list[Finding] = []
-    detected: set[int] = set()
-    for f in findings:
-        matched = False
-        for i, d in enumerate(dismissed):
-            if _matches(f, d):
-                detected.add(i)
-                matched = True
-        if not matched:
-            active.append(f)
-    return active, [d for i, d in enumerate(dismissed) if i in detected]
+    by_key: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for di, d in enumerate(dismissed):
+        by_key[(d.rule, d.path)].append(di)
+    pairs: list[tuple[int, int, int, int]] = []
+    for fi, f in enumerate(findings):
+        for di in by_key.get((f.rule, f.path), ()):
+            score = _match_score(f, dismissed[di])
+            if score is not None:
+                drift = abs(dismissed[di].line - f.line)
+                pairs.append((score, drift, fi, di))
+    pairs.sort()
+    used_f: set[int] = set()
+    used_d: set[int] = set()
+    for _, _, fi, di in pairs:
+        if fi in used_f or di in used_d:
+            continue
+        used_f.add(fi)
+        used_d.add(di)
+    active = [f for i, f in enumerate(findings) if i not in used_f]
+    return active, [d for i, d in enumerate(dismissed) if i in used_d]
 
 
 def _owning_module(path: str, module_paths: List[str]) -> Optional[str]:

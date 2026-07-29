@@ -252,7 +252,9 @@ def parse_sarif_files(sarif_paths: Iterable[Path], module_paths: List[str]) -> L
     return findings
 
 
-def summarize(findings: List[Finding], dismissed_count: int = 0) -> dict:
+def summarize(
+    findings: List[Finding], dismissed_count: int = 0, label: str = "CodeQL"
+) -> dict:
     by_severity = {"error": 0, "medium": 0, "low": 0}
     for f in findings:
         by_severity[f.severity] += 1
@@ -267,6 +269,7 @@ def summarize(findings: List[Finding], dismissed_count: int = 0) -> dict:
         "worst": worst,
         "tier": codeql_tier(worst),
         "dismissed": dismissed_count,
+        "label": label,
     }
 
 
@@ -386,6 +389,11 @@ def main(argv=None) -> int:
         help="JSON-Lines module list from discover.py",
     )
     parser.add_argument("--codeql-subdirectory", default="codeql")
+    parser.add_argument(
+        "--check-label", default="CodeQL",
+        help="Human-readable name of this check, shown as its row label on "
+        "the per-module roll-up pages (e.g. 'CodeQL Security')",
+    )
     parser.add_argument("--repo-url", default="", help="e.g. https://github.com/org/repo")
     parser.add_argument(
         "--dismissed-alerts", type=Path, default=None,
@@ -430,7 +438,8 @@ def main(argv=None) -> int:
         out_dir = dest / mod / subdir
         _clean_dir(out_dir)
         (out_dir / "summary.json").write_text(
-            json.dumps(summarize(mod_findings, len(mod_dismissed)), indent=2) + "\n",
+            json.dumps(summarize(mod_findings, len(mod_dismissed), args.check_label), indent=2)
+            + "\n",
             encoding="utf-8",
         )
         (out_dir / "index.html").write_text(
@@ -450,7 +459,8 @@ def main(argv=None) -> int:
     global_dir = dest / subdir
     _clean_dir(global_dir)
     (global_dir / "summary.json").write_text(
-        json.dumps(summarize(findings, len(dismissed)), indent=2) + "\n", encoding="utf-8"
+        json.dumps(summarize(findings, len(dismissed), args.check_label), indent=2) + "\n",
+        encoding="utf-8",
     )
     (global_dir / "index.html").write_text(
         render_findings_html(

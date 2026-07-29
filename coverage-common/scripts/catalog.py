@@ -41,9 +41,9 @@ from typing import Iterable, List, Optional
 
 from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
-from _tiers import CoverageThresholds, codeql_tier, coverage_tier
+from _tiers import SEVERITY_ORDER, CoverageThresholds, codeql_tier, coverage_tier
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 CSS = """\
 * { box-sizing: border-box; }
@@ -142,6 +142,63 @@ def load_codeql_summary(path: Path) -> Optional[dict]:
     return doc
 
 
+def aggregate_codeql(summaries: Iterable[Optional[dict]]) -> Optional[dict]:
+    """Combine several codeql-check summaries into one roll-up entry."""
+    present = [s for s in summaries if s is not None]
+    if not present:
+        return None
+    by_severity = {
+        sev: sum(int((s.get("by_severity") or {}).get(sev, 0) or 0) for s in present)
+        for sev in SEVERITY_ORDER
+    }
+    worst = next((sev for sev in SEVERITY_ORDER if by_severity[sev] > 0), None)
+    return {
+        "findings": sum(int(s.get("findings", 0) or 0) for s in present),
+        "by_severity": by_severity,
+        "worst": worst,
+        "tier": codeql_tier(worst),
+        "dismissed": sum(int(s.get("dismissed", 0) or 0) for s in present),
+    }
+
+
+def _check_label(subdir: str, *summaries: Optional[dict]) -> str:
+    for s in summaries:
+        if s is not None and s.get("label"):
+            return str(s["label"])
+    return "CodeQL" if subdir == "codeql" else subdir
+
+
+def discover_codeql_check_subdirs(
+    dest: Path,
+    module_paths: List[str],
+    *,
+    default_subdir: str,
+    coverage_subdirs: Iterable[str],
+) -> List[str]:
+    """Find every codeql-check subdirectory published on the baseline branch.
+
+    A check subdirectory is any directory (under the branch root or under a
+    module) whose ``summary.json`` is codeql-shaped (has a ``findings`` key).
+    This keeps the catalog order-independent: any publisher writing a new
+    check (e.g. ``codeql-jpl``) shows up on regeneration without new flags.
+    The default subdirectory sorts first; others follow alphabetically.
+    """
+    excluded = {s for s in coverage_subdirs if s}
+    names: set[str] = set()
+    for base in [dest] + [dest / p for p in module_paths]:
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
+            if not child.is_dir() or child.name in excluded or child.name in names:
+                continue
+            if load_codeql_summary(child / "summary.json") is not None:
+                names.add(child.name)
+    ordered = sorted(n for n in names if n != default_subdir)
+    if default_subdir in names or not ordered:
+        ordered.insert(0, default_subdir)
+    return ordered
+
+
 @dataclass
 class ModuleEntry:
     """One row in the catalog."""
@@ -152,8 +209,10 @@ class ModuleEntry:
     ut_report: str
     int_summary: Optional[Summary]
     int_report: str
-    codeql_summary: Optional[dict]
-    codeql_report: str
+    #: Ordered mapping of check subdirectory -> summary (None when the check
+    #: has not published data for this module).
+    codeql_checks: dict
+    codeql_report: str  # primary (first) check's findings page
     module_report: Optional[str] = None  # roll-up page, when one is written
 
     @property
@@ -167,6 +226,11 @@ class ModuleEntry:
     @property
     def has_int_coverage(self) -> bool:
         return self.int_summary is not None and self.int_summary.line.total > 0
+
+    @property
+    def codeql_summary(self) -> Optional[dict]:
+        """Aggregated roll-up across every published codeql check."""
+        return aggregate_codeql(self.codeql_checks.values())
 
 
 @dataclass
@@ -249,12 +313,19 @@ def _int_cell(entry: ModuleEntry, thresholds: CoverageThresholds) -> str:
 
 
 def _codeql_cell(entry: ModuleEntry) -> str:
-    if entry.codeql_summary is None:
+    summary = entry.codeql_summary
+    if summary is None:
         return '<span class="no-cov">&mdash;</span>'
-    count = int(entry.codeql_summary.get("findings", 0))
-    tier = codeql_tier(entry.codeql_summary.get("worst"))
+    count = int(summary.get("findings", 0))
+    tier = codeql_tier(summary.get("worst"))
     label = "clean" if count == 0 else f"{count} finding{'s' if count != 1 else ''}"
-    return f'{badge_html(tier)} <a href="{html.escape(entry.codeql_report)}">{label}</a>'
+    published = [s for s in entry.codeql_checks.values() if s is not None]
+    href = (
+        entry.codeql_report
+        if len(published) == 1 or entry.module_report is None
+        else entry.module_report
+    )
+    return f'{badge_html(tier)} <a href="{html.escape(href)}">{label}</a>'
 
 
 def _render_group_header(group: Group, thresholds: CoverageThresholds) -> str:
@@ -312,7 +383,7 @@ def render_module_index_html(
     thresholds: CoverageThresholds,
     coverage_subdir: str,
     int_subdir: str,
-    codeql_subdir: str,
+    check_labels: dict,
 ) -> str:
     """Render a module's roll-up page linking its published artifact subtrees.
 
@@ -337,19 +408,21 @@ def render_module_index_html(
         int_html = '<span class="no-cov">no data</span>'
     rows.append(f"<tr><td>INT Coverage</td><td>{int_html}</td></tr>")
 
-    if entry.codeql_summary is not None:
-        count = int(entry.codeql_summary.get("findings", 0))
-        dismissed = int(entry.codeql_summary.get("dismissed", 0) or 0)
-        tier = codeql_tier(entry.codeql_summary.get("worst"))
-        label = "clean" if count == 0 else f"{count} finding{'s' if count != 1 else ''}"
-        if dismissed:
-            label += f" ({dismissed} dismissed)"
-        codeql_html = (
-            f'{badge_html(tier)} <a href="{codeql_subdir}/index.html">{label}</a>'
-        )
-    else:
-        codeql_html = '<span class="no-cov">no data</span>'
-    rows.append(f"<tr><td>CodeQL</td><td>{codeql_html}</td></tr>")
+    for subdir, summary in entry.codeql_checks.items():
+        row_label = html.escape(check_labels.get(subdir, subdir))
+        if summary is not None:
+            count = int(summary.get("findings", 0))
+            dismissed = int(summary.get("dismissed", 0) or 0)
+            tier = codeql_tier(summary.get("worst"))
+            label = "clean" if count == 0 else f"{count} finding{'s' if count != 1 else ''}"
+            if dismissed:
+                label += f" ({dismissed} dismissed)"
+            codeql_html = (
+                f'{badge_html(tier)} <a href="{html.escape(subdir)}/index.html">{label}</a>'
+            )
+        else:
+            codeql_html = '<span class="no-cov">no data</span>'
+        rows.append(f"<tr><td>{row_label}</td><td>{codeql_html}</td></tr>")
 
     depth = entry.path.count("/") + 1
     checklist_href = "../" * depth + "index.html"
@@ -376,8 +449,8 @@ def render_index_html(
     generated_at: str,
     overall: Optional[Summary],
     overall_report: str,
-    overall_codeql: Optional[dict],
-    overall_codeql_report: str,
+    overall_codeql_checks: dict,
+    check_labels: dict,
     entries: List[ModuleEntry],
     thresholds: CoverageThresholds,
 ) -> str:
@@ -395,16 +468,18 @@ def render_index_html(
     else:
         parts.append('<strong>UT coverage:</strong> <span class="no-cov">no data</span>')
     parts.append('<strong>INT coverage:</strong> <span class="no-cov">no data</span>')
-    if overall_codeql is not None:
-        count = int(overall_codeql.get("findings", 0))
-        tier = codeql_tier(overall_codeql.get("worst"))
-        label = "clean" if count == 0 else f"{count} finding{'s' if count != 1 else ''}"
-        parts.append(
-            f"<strong>CodeQL:</strong> {badge_html(tier)} "
-            f'<a href="{html.escape(overall_codeql_report)}">{label}</a>'
-        )
-    else:
-        parts.append('<strong>CodeQL:</strong> <span class="no-cov">no data</span>')
+    for check_subdir, check_summary in overall_codeql_checks.items():
+        name = html.escape(check_labels.get(check_subdir, check_subdir))
+        if check_summary is not None:
+            count = int(check_summary.get("findings", 0))
+            tier = codeql_tier(check_summary.get("worst"))
+            label = "clean" if count == 0 else f"{count} finding{'s' if count != 1 else ''}"
+            parts.append(
+                f"<strong>{name}:</strong> {badge_html(tier)} "
+                f'<a href="{html.escape(check_subdir)}/index.html">{label}</a>'
+            )
+        else:
+            parts.append(f'<strong>{name}:</strong> <span class="no-cov">no data</span>')
     overall_html = " &middot; ".join(f"<span>{p}</span>" for p in parts)
 
     group_html = "\n".join(_render_group(g, thresholds) for g in groups)
@@ -433,8 +508,7 @@ def build_catalog(
     generated_at: str,
     overall: Optional[Summary],
     overall_report: str,
-    overall_codeql: Optional[dict],
-    overall_codeql_report: str,
+    overall_codeql_checks: dict,
     thresholds: CoverageThresholds,
 ) -> dict:
     out_modules = []
@@ -450,11 +524,21 @@ def build_catalog(
             int_entry = m.int_summary.to_catalog_entry()
             int_entry["report"] = m.int_report
             int_entry["tier"] = coverage_tier(m.int_summary.line.percent, True, thresholds)
+        agg = m.codeql_summary
         codeql_entry = None
-        if m.codeql_summary is not None:
-            codeql_entry = dict(m.codeql_summary)
+        if agg is not None:
+            codeql_entry = dict(agg)
             codeql_entry["report"] = m.codeql_report
-            codeql_entry.setdefault("tier", codeql_tier(m.codeql_summary.get("worst")))
+            codeql_entry.setdefault("tier", codeql_tier(agg.get("worst")))
+        codeql_checks_entry = {}
+        for check_subdir, check_summary in m.codeql_checks.items():
+            if check_summary is None:
+                codeql_checks_entry[check_subdir] = None
+                continue
+            check_entry = dict(check_summary)
+            check_entry["report"] = f"{m.path}/{check_subdir}/index.html"
+            check_entry.setdefault("tier", codeql_tier(check_summary.get("worst")))
+            codeql_checks_entry[check_subdir] = check_entry
         out_modules.append(
             {
                 "path": m.path,
@@ -463,6 +547,7 @@ def build_catalog(
                 "ut": ut_entry,
                 "int": int_entry,
                 "codeql": codeql_entry,
+                "codeql_checks": codeql_checks_entry,
                 "tiers": {
                     "ut": coverage_tier(
                         m.ut_summary.line.percent if m.has_coverage else 0.0,
@@ -475,9 +560,7 @@ def build_catalog(
                         else None
                     ),
                     "codeql": (
-                        codeql_tier(m.codeql_summary.get("worst"))
-                        if m.codeql_summary is not None
-                        else None
+                        codeql_tier(agg.get("worst")) if agg is not None else None
                     ),
                 },
             }
@@ -490,9 +573,22 @@ def build_catalog(
         overall_entry["tier"] = coverage_tier(overall.line.percent, True, thresholds)
 
     overall_codeql_entry = None
-    if overall_codeql is not None:
-        overall_codeql_entry = dict(overall_codeql)
-        overall_codeql_entry["report"] = overall_codeql_report
+    overall_agg = aggregate_codeql(overall_codeql_checks.values())
+    if overall_agg is not None:
+        overall_codeql_entry = dict(overall_agg)
+        first_present = next(
+            s for s, v in overall_codeql_checks.items() if v is not None
+        )
+        overall_codeql_entry["report"] = f"{first_present}/index.html"
+    overall_checks_entry = {}
+    for check_subdir, check_summary in overall_codeql_checks.items():
+        if check_summary is None:
+            overall_checks_entry[check_subdir] = None
+            continue
+        check_entry = dict(check_summary)
+        check_entry["report"] = f"{check_subdir}/index.html"
+        check_entry.setdefault("tier", codeql_tier(check_summary.get("worst")))
+        overall_checks_entry[check_subdir] = check_entry
 
     return {
         "schema": SCHEMA_VERSION,
@@ -507,6 +603,7 @@ def build_catalog(
         },
         "overall": overall_entry,
         "overall_codeql": overall_codeql_entry,
+        "overall_codeql_checks": overall_checks_entry,
         "modules": out_modules,
     }
 
@@ -537,7 +634,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--codeql-subdirectory",
         default="codeql",
-        help='Subdirectory under each module holding CodeQL findings (default: "codeql")',
+        help="Primary subdirectory under each module holding CodeQL findings "
+        '(default: "codeql").  Additional check subdirectories published on '
+        "the baseline branch are auto-discovered and listed as well.",
     )
     parser.add_argument("--ref", required=True, help="Source ref name (branch or tag)")
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
@@ -567,34 +666,57 @@ def main(argv=None) -> int:
 
     generated_at = args.generated_at or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    entries: list[ModuleEntry] = []
+    records: list[dict] = []
     with args.modules_jsonl.open("r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            path = rec["path"]
-            has_ut = bool(rec.get("has_ut", False))
-            mod_dir = dest / path
-            ut_summary = load_summary(
-                (mod_dir / subdir if subdir else mod_dir) / "summary.json"
+            if line:
+                records.append(json.loads(line))
+
+    check_subdirs = discover_codeql_check_subdirs(
+        dest,
+        [rec["path"] for rec in records],
+        default_subdir=codeql_subdir,
+        coverage_subdirs=(subdir, int_subdir),
+    )
+
+    entries: list[ModuleEntry] = []
+    for rec in records:
+        path = rec["path"]
+        has_ut = bool(rec.get("has_ut", False))
+        mod_dir = dest / path
+        ut_summary = load_summary(
+            (mod_dir / subdir if subdir else mod_dir) / "summary.json"
+        )
+        int_summary = load_summary(mod_dir / int_subdir / "summary.json")
+        codeql_checks = {
+            s: load_codeql_summary(mod_dir / s / "summary.json") for s in check_subdirs
+        }
+        entries.append(
+            ModuleEntry(
+                path=path,
+                has_ut=has_ut,
+                ut_summary=ut_summary,
+                ut_report=f"{path}/{subdir_segment}index.html",
+                int_summary=int_summary,
+                int_report=f"{path}/{int_subdir}/index.html",
+                codeql_checks=codeql_checks,
+                codeql_report=f"{path}/{check_subdirs[0]}/index.html",
+                module_report=f"{path}/index.html" if subdir else None,
             )
-            int_summary = load_summary(mod_dir / int_subdir / "summary.json")
-            codeql_summary = load_codeql_summary(mod_dir / codeql_subdir / "summary.json")
-            entries.append(
-                ModuleEntry(
-                    path=path,
-                    has_ut=has_ut,
-                    ut_summary=ut_summary,
-                    ut_report=f"{path}/{subdir_segment}index.html",
-                    int_summary=int_summary,
-                    int_report=f"{path}/{int_subdir}/index.html",
-                    codeql_summary=codeql_summary,
-                    codeql_report=f"{path}/{codeql_subdir}/index.html",
-                    module_report=f"{path}/index.html" if subdir else None,
-                )
-            )
+        )
+
+    overall_codeql_checks = {
+        s: load_codeql_summary(dest / s / "summary.json") for s in check_subdirs
+    }
+    check_labels = {
+        s: _check_label(
+            s,
+            overall_codeql_checks.get(s),
+            *(e.codeql_checks.get(s) for e in entries),
+        )
+        for s in check_subdirs
+    }
 
     # Per-module roll-up pages.  In flatten mode (subdir == "") the module
     # root already holds the coverage report's own index.html, so skip.
@@ -612,7 +734,7 @@ def main(argv=None) -> int:
                     thresholds=thresholds,
                     coverage_subdir=subdir,
                     int_subdir=int_subdir,
-                    codeql_subdir=codeql_subdir,
+                    check_labels=check_labels,
                 ),
                 encoding="utf-8",
             )
@@ -620,8 +742,6 @@ def main(argv=None) -> int:
     overall_dir = dest / subdir if subdir else dest
     overall_summary = load_summary(overall_dir / "summary.json")
     overall_report = f"{subdir_segment}coverage-all.html" if subdir else "coverage-all.html"
-    overall_codeql = load_codeql_summary(dest / codeql_subdir / "summary.json")
-    overall_codeql_report = f"{codeql_subdir}/index.html"
 
     catalog = build_catalog(
         modules=entries,
@@ -631,8 +751,7 @@ def main(argv=None) -> int:
         generated_at=generated_at,
         overall=overall_summary,
         overall_report=overall_report,
-        overall_codeql=overall_codeql,
-        overall_codeql_report=overall_codeql_report,
+        overall_codeql_checks=overall_codeql_checks,
         thresholds=thresholds,
     )
     (dest / "catalog.json").write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
@@ -644,8 +763,8 @@ def main(argv=None) -> int:
         generated_at=generated_at,
         overall=overall_summary,
         overall_report=overall_report,
-        overall_codeql=overall_codeql,
-        overall_codeql_report=overall_codeql_report,
+        overall_codeql_checks=overall_codeql_checks,
+        check_labels=check_labels,
         entries=entries,
         thresholds=thresholds,
     )

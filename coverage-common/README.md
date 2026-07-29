@@ -63,6 +63,7 @@ test fixtures.
 | `jobs`              | `""`    | Parallel job count for check. `random` picks 1-32 each run; empty omits `-j`.        |
 | `strict`            | `false` | When `true`, fail the action if any module's UT/coverage build fails. Default `false` so per-module failures surface as missing `summary.json` (rendered as "no coverage" downstream) without failing CI. |
 | `debug`             | `false` | When `true`, forward gcovr's `-v` verbose output for global and per-module steps. Useful for diagnosing slow or stuck coverage runs. |
+| `include-autocoder-modules` | `false` | When `true`, also list autocoder-only modules (no hand-written C/C++ source, e.g. types/ports-only modules). |
 
 ## Outputs
 
@@ -72,7 +73,9 @@ test fixtures.
 
 ## Scripts (under `scripts/`)
 
-* `discover.py` &mdash; emits JSON-Lines of `{path, has_ut}` for each module.
+* `discover.py` &mdash; emits JSON-Lines of `{path, has_ut, has_cpp}` for each
+  module.  Autocoder-only modules (`has_cpp: false`) are excluded unless
+  `--include-autocoder-only` is passed.
 * `run_coverage.py` &mdash; runs `fprime-util check --coverage` per module.
   Exits 0 by default even if individual modules fail (lenient); pass
   `--strict` (or set the `strict` input on the action to `'true'`) to

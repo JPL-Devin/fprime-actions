@@ -18,9 +18,27 @@ inputs:
     required: false
     default: "coverage"
   codeql-subdirectory:
-    description: "Subdirectory under each module in the baseline branch holding CodeQL findings"
+    description: >
+      Subdirectory under each module in the baseline branch holding this
+      check's CodeQL findings.  Give each publishing workflow its own
+      subdirectory (e.g. "codeql", "codeql-jpl") so checks do not overwrite
+      each other; the checklist lists every published check automatically.
     required: false
     default: "codeql"
+  check-label:
+    description: >
+      Human-readable name for this check, used as its row label on the
+      per-module roll-up pages and the checklist header (e.g. "CodeQL
+      Security", "CodeQL JPL Standard").
+    required: false
+    default: "CodeQL"
+  include-autocoder-modules:
+    description: >
+      When "true", also list autocoder-only modules (no hand-written C/C++
+      source, e.g. types/ports-only modules) in the published findings and
+      checklist.  Off by default.
+    required: false
+    default: "false"
   config-file:
     description: >
       Path (relative to working-directory) of the checklist config file
@@ -74,6 +92,8 @@ runs:
         CONFIG_FILE: ${{ inputs.config-file }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         REPO_SLUG: ${{ github.repository }}
+        CHECK_LABEL: ${{ inputs.check-label }}
+        INCLUDE_AUTOCODER: ${{ inputs.include-autocoder-modules }}
       run: |
         set -e
         BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
@@ -88,8 +108,12 @@ runs:
           --repo "$REPO_SLUG" --output "$DISMISSED_JSON"
         export DISMISSED_JSON
 
+        DISCOVER_FLAGS=""
+        if [ "${INCLUDE_AUTOCODER}" = "true" ]; then
+          DISCOVER_FLAGS="--include-autocoder-only"
+        fi
         MODULES_JSONL="${RUNNER_TEMP:-/tmp}/codeql-modules.jsonl"
-        python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . ${DISCOVER_FLAGS} > "$MODULES_JSONL"
         export MODULES_JSONL
 
         SARIF_ARGS=""
@@ -112,6 +136,7 @@ runs:
             --codeql-subdirectory "$CODEQL_SUBDIR" \
             --repo-url "$REPO_URL" \
             --dismissed-alerts "$DISMISSED_JSON" \
+            --check-label "$CHECK_LABEL" \
             --ref "$REF_NAME" \
             --commit "$COMMIT_SHA" \
           && python3 "${COMMON_PATH}/scripts/catalog.py" \

@@ -49,9 +49,23 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
 (subtrees are disjoint, and the checklist page regenerates from whatever
 `summary.json` files exist on the branch, so retries are clean overlays).
 
+## Multiple checks
+
+Several CodeQL workflows (e.g. a security scan and a JPL-coding-standard
+scan) can each publish their own findings by using a **distinct
+`codeql-subdirectory`** (e.g. `codeql`, `codeql-jpl`) and a descriptive
+`check-label`. Checks own disjoint subtrees so they never overwrite each
+other, and the checklist regeneration auto-discovers every published check:
+the per-module roll-up page gets one row per check, and the landing page
+header lists each check's global status. The main index's CodeQL column
+aggregates all checks (summed findings, worst severity).
+
 ## What it does
 
 1. Discovers modules with `coverage-common/scripts/discover.py`.
+   Autocoder-only modules (no hand-written C/C++ source, e.g. types/
+   ports-only modules) are excluded unless `include-autocoder-modules`
+   is `'true'`.
 2. Parses the SARIF files, normalizing severities to error / medium / low
    (CodeQL `security-severity` >= 7.0 is error, >= 4.0 medium, else low;
    otherwise SARIF level error/warning/note maps to error/medium/low).
@@ -73,8 +87,9 @@ pushes: it re-fetches the branch and re-mirrors only this writer's subtree
    and `<mod>/codeql/summary.json` for every module (clean modules get a
    "clean" page), plus a global `codeql/` entry.
 6. Regenerates the top-level checklist `index.html` + `catalog.json`
-   (schema v2) with platinum/gold/silver/bronze badges, plus a per-module
-   roll-up `<mod>/index.html` linking each artifact subtree with its badge.
+   (schema v3) with platinum/gold/silver/bronze badges, plus a per-module
+   roll-up `<mod>/index.html` with one row per published check (coverage,
+   int-coverage, and each CodeQL check) linking its detail page.
 7. Commits and pushes via the shared retrying publish helper.
 
 ## Badge tiers
@@ -110,7 +125,9 @@ older action versions.
 | `working-directory`      | `.`        | Repository checkout root.                                          |
 | `sarif-files`            | (required) | Newline-separated list of filtered SARIF files.                    |
 | `baseline-branch-prefix` | `coverage` | Prefix applied to `<ref-name>` to form the baseline branch.        |
-| `codeql-subdirectory`    | `codeql`   | Subdirectory under each module holding CodeQL findings.            |
+| `codeql-subdirectory`    | `codeql`   | Subdirectory under each module holding this check's findings. Use a distinct value per publishing workflow. |
+| `check-label`            | `CodeQL`   | Human-readable check name shown on roll-up pages (e.g. `CodeQL Security`). |
+| `include-autocoder-modules` | `false` | When `'true'`, also list autocoder-only modules (no hand-written C/C++). |
 | `config-file`            | `.github/module-checklist.yml` | Checklist config file in the repo. Defaults apply when missing. |
 | `github-token`           | `${{ github.token }}` | Token for fetching dismissed alerts (`security-events: read`). Empty skips dismissal filtering. |
 
@@ -152,11 +169,13 @@ older action versions.
 ```
 coverage/devel
 ├── index.html                 checklist landing page (regenerated)
-├── catalog.json               schema v2 (regenerated)
+├── catalog.json               schema v3 (regenerated)
 ├── codeql/                    global findings page + summary.json
+├── codeql-jpl/                (optional) another check's global findings
 ├── Svc/CmdDispatcher/
 │   ├── index.html             module roll-up page (regenerated)
 │   ├── coverage/              (written by coverage-update)
-│   └── codeql/                index.html + summary.json (this action)
+│   ├── codeql/                index.html + summary.json (this action)
+│   └── codeql-jpl/            (optional) another check's findings
 └── ...
 ```

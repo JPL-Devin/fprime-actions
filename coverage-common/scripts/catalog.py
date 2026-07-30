@@ -43,7 +43,7 @@ from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
 from _tiers import SEVERITY_ORDER, TIERS, CoverageThresholds, checks_tier, codeql_tier, coverage_tier
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CSS = """\
 * { box-sizing: border-box; }

@@ -44,9 +44,9 @@ permissions:
 4. Mirrors the per-module + global outputs into the worktree, writes
    placeholder pages for modules with no coverage, generates the top-level
    checklist `index.html` (with platinum/gold/silver/bronze badges) and a
-   machine-readable `catalog.json` (schema v2).  The checklist merges
-   whatever other artifact types (e.g. [`codeql-publish`](../codeql-publish/))
-   already exist on the branch.
+   machine-readable `catalog.json` (schema v4).  The checklist merges
+   whatever other artifact types (e.g. [`codeql-publish`](../codeql-publish/),
+   [`component-checks`](../component-checks/)) already exist on the branch.
 5. Commits and pushes via the shared retrying publish helper
    (`coverage-common/scripts/publish_baseline.sh`); non-fast-forward pushes
    are retried after re-mirroring, so concurrent writers to the same branch
@@ -55,7 +55,8 @@ permissions:
 Forks are skipped automatically (no push from forks).
 
 When multiple workflows publish to the same baseline branch (coverage,
-codeql, future int-coverage), give each publisher job the same repo-wide
+codeql, component-checks, future int-coverage), give each publisher job
+the same repo-wide
 concurrency group:
 
 ```yaml
@@ -86,7 +87,7 @@ concurrency:
 
 ```
 <prefix>/<ref-name>            (orphan branch, e.g. coverage/devel)
-├── catalog.json                       machine-readable module list (schema v2)
+├── catalog.json                       machine-readable module list (schema v4)
 ├── index.html                         checklist landing page (badges per module)
 ├── coverage/                          global --all run
 │   ├── summary.json
@@ -96,6 +97,9 @@ concurrency:
 │   ├── summary.json
 │   ├── index.html                     was coverage.html
 │   └── coverage.*.html
+├── Svc/CmdDispatcher/checks/          (written by component-checks)
+│   ├── summary.json
+│   └── index.html
 ├── Drv/LinuxGpio/coverage/
 │   └── index.html                     placeholder: "no coverage recorded"
 └── ...                                one entry per discovered module

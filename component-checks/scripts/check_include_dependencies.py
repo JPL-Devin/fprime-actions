@@ -7,9 +7,12 @@ component's CMakeLists.txt (e.g. via DEPENDS or an explicit target name).
 Exits non-zero listing any missing dependency.
 
 Heuristics: an include of ``Fw/Types/Assert.hpp`` depends on module
-``Fw/Types``.  System headers (no directory component), the module's own
-headers, generated autocode headers (``*Ac.hpp``/``*Ac.h``), and
-``config``/``Fpp`` headers are skipped.
+``Fw/Types``.  System headers (no directory component), system/platform
+headers under a lowercase top-level directory (``sys/socket.h``,
+``arpa/inet.h``, ``linux/gpio.h``, ``mach/mach.h``, ``openssl/evp.h``,
+...; F´ module directories are CapitalCase), the module's own headers
+(including its test helpers), generated autocode headers
+(``*Ac.hpp``/``*Ac.h``), and ``config``/``Fpp`` headers are skipped.
 """
 
 import re
@@ -17,9 +20,9 @@ import sys
 from pathlib import PurePosixPath
 
 from _report import finish, make_parser
-from _sources import impl_sources, includes_of
+from _sources import TEST_DIR_NAMES, impl_sources, includes_of
 
-_SKIP_TOP_DIRS = {"config", "fpp", "gtest", "gmock", "stest"}
+_SKIP_TOP_DIRS = {"config", "fpp", "gtest", "gmock"}
 
 
 def dependency_of(include: str) -> str | None:
@@ -29,9 +32,20 @@ def dependency_of(include: str) -> str | None:
         return None  # system or local header
     if path.name.endswith(("Ac.hpp", "Ac.h", "Ac.cpp")):
         return None  # generated autocode
-    if path.parts[0].lower() in _SKIP_TOP_DIRS:
+    top = path.parts[0]
+    if top.lower() in _SKIP_TOP_DIRS:
         return None
-    return str(path.parent)
+    if not top[:1].isupper():
+        return None  # system/platform/third-party header (F´ modules are CapitalCase)
+    # A test-helper include such as Drv/Ip/test/ut/Helper.hpp depends on Drv/Ip.
+    parts = list(path.parts[:-1])
+    for i, part in enumerate(parts):
+        if part.lower() in TEST_DIR_NAMES:
+            parts = parts[:i]
+            break
+    if not parts:
+        return None
+    return "/".join(parts)
 
 
 def declared_in_cmake(dep: str, cmake_text: str) -> bool:

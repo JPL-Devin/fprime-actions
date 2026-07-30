@@ -34,7 +34,8 @@ GitHub UI so they are excluded from the published tables (omit it, or set
 
 ## Conflict avoidance
 
-Multiple publishers (coverage, codeql, future int-coverage) write to the
+Multiple publishers (coverage, codeql, component-checks, future
+int-coverage) write to the
 same baseline branch. Give every publisher job the same repo-wide
 concurrency group so runs serialize across workflows:
 
@@ -90,9 +91,10 @@ aggregates all checks (summed findings, worst severity).
    and `<mod>/codeql/summary.json` for every module (clean modules get a
    "clean" page), plus a global `codeql/` entry.
 6. Regenerates the top-level checklist `index.html` + `catalog.json`
-   (schema v3) with platinum/gold/silver/bronze badges, plus a per-module
+   (schema v4) with platinum/gold/silver/bronze badges, plus a per-module
    roll-up `<mod>/index.html` with one row per published check (coverage,
-   int-coverage, and each CodeQL check) linking its detail page.
+   int-coverage, checklist checks, and each CodeQL check) linking its
+   detail page.
 7. Commits and pushes via the shared retrying publish helper.
 
 ## Badge tiers
@@ -172,12 +174,13 @@ older action versions.
 ```
 coverage/devel
 ├── index.html                 checklist landing page (regenerated)
-├── catalog.json               schema v3 (regenerated)
+├── catalog.json               schema v4 (regenerated)
 ├── codeql/                    global findings page + summary.json
 ├── codeql-jpl/                (optional) another check's global findings
 ├── Svc/CmdDispatcher/
 │   ├── index.html             module roll-up page (regenerated)
 │   ├── coverage/              (written by coverage-update)
+│   ├── checks/                (written by component-checks)
 │   ├── codeql/                index.html + summary.json (this action)
 │   └── codeql-jpl/            (optional) another check's findings
 └── ...

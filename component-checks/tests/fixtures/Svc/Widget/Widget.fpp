@@ -34,6 +34,8 @@ module Svc {
     async input port run: Svc.Sched
 
     @ Data input
+    # Deliberately sync (not the recommended all-async profile for an
+    # active component): exercises the parser's sync-input-port coverage.
     sync input port dataIn: Fw.BufferSend
 
     @ Data output

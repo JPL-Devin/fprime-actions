@@ -101,7 +101,7 @@ permissions:
 | `baseline-branch-prefix` | `coverage`                     | Prefix applied to `<ref-name>` to form the baseline branch.    |
 | `checks-subdirectory`    | `checks`                       | Subdirectory under each module holding check results.          |
 | `extra-results`          | `""`                           | Newline-separated JSON-Lines result files to merge.            |
-| `config-file`            | `.github/module-checklist.yml` | Checklist config file (tier thresholds).                       |
+| `config-file`            | `.github/module-checklist.yml` | Checklist config file (coverage tier thresholds; Checks badge cut-offs are fixed: platinum all pass, gold >= 90%, silver >= 80%). |
 
 ## Outputs
 
@@ -144,3 +144,12 @@ $ python3 coverage-common/scripts/discover.py --root . > /tmp/modules.jsonl
 $ PYTHONPATH=component-checks/scripts python3 component-checks/scripts/run_checks.py \
     --root . --dest /tmp/checks --modules-jsonl /tmp/modules.jsonl --gate
 ```
+
+## Tests
+
+```console
+$ python3 component-checks/tests/test_checks.py
+```
+
+No external dependencies; the runner exits non-zero on any failure.
+

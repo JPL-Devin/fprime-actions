@@ -24,6 +24,7 @@ import datetime as dt
 import html
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import check_command_handlers
@@ -126,6 +127,8 @@ def render_module_page(module_path: str, checks: list[dict], *, ref: str, commit
         )
         for check in in_category:
             status = check.get("status", "skip")
+            if status not in ("pass", "fail", "skip"):
+                status = "skip"
             failures = check.get("failures") or []
             notes = ""
             if failures:
@@ -189,10 +192,8 @@ def main(argv=None) -> int:
             if line:
                 modules.append(json.loads(line)["path"])
 
-    results_file = args.dest / "_checks_results.jsonl"
-    results_file.parent.mkdir(parents=True, exist_ok=True)
-    if results_file.exists():
-        results_file.unlink()
+    scratch_dir = tempfile.TemporaryDirectory(prefix="component-checks-")
+    results_file = Path(scratch_dir.name) / "_checks_results.jsonl"
 
     for module_path in modules:
         run_static_checks(module_path, root, results_file)
@@ -214,7 +215,13 @@ def main(argv=None) -> int:
                     by_module[module_path] = [
                         c for c in by_module[module_path] if c.get("id") != record.get("id")
                     ] + [record]
-    results_file.unlink(missing_ok=True)
+                else:
+                    print(
+                        f"WARNING: dropping result for unknown module "
+                        f"'{record.get('module', '')}'",
+                        file=sys.stderr,
+                    )
+    scratch_dir.cleanup()
 
     any_failed = False
     for module_path, checks in by_module.items():

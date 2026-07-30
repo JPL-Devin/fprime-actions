@@ -32,8 +32,10 @@ inputs:
   config-file:
     description: >
       Path (relative to working-directory) of the checklist config file
-      holding badge-tier thresholds and future reporting settings.
-      Defaults apply when the file does not exist.
+      holding coverage badge-tier thresholds and future reporting settings.
+      Checks-badge tiers use fixed cut-offs (platinum all pass, gold >= 90%,
+      silver >= 80%) and are not configurable here.  Defaults apply when the
+      file does not exist.
     required: false
     default: ".github/module-checklist.yml"
 
@@ -82,11 +84,11 @@ runs:
         python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
         export MODULES_JSONL
 
-        EXTRA_ARGS=""
-        while IFS= read -r f; do
-          [ -n "$f" ] && EXTRA_ARGS="$EXTRA_ARGS --extra-results $f"
-        done <<< "$EXTRA_RESULTS"
-        export EXTRA_ARGS
+        # Pass the extra-results list through a file so paths with spaces
+        # or shell metacharacters survive intact.
+        EXTRA_LIST="${RUNNER_TEMP:-/tmp}/checks-extra-results.txt"
+        printf '%s\n' "$EXTRA_RESULTS" | sed '/^[[:space:]]*$/d' > "$EXTRA_LIST"
+        export EXTRA_LIST
 
         # Resolve the config path against the source checkout so it is still
         # found when the command runs against the baseline worktree.
@@ -99,12 +101,15 @@ runs:
 
         bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
           "$BASELINE_BRANCH" "$COMMIT_SHA" "checks" \
-          bash -c 'python3 "${CHECKS_PATH}/scripts/run_checks.py" \
+          bash -c 'EXTRA_ARGS=(); while IFS= read -r f; do
+            EXTRA_ARGS+=(--extra-results "$f")
+          done < "$EXTRA_LIST"
+          python3 "${CHECKS_PATH}/scripts/run_checks.py" \
             --root "$REPO_ROOT" \
             --dest "$BASELINE_DIR" \
             --modules-jsonl "$MODULES_JSONL" \
             --checks-subdirectory "$CHECKS_SUBDIR" \
-            $EXTRA_ARGS \
+            "${EXTRA_ARGS[@]}" \
             --ref "$REF_NAME" \
             --commit "$COMMIT_SHA" \
           && python3 "${COMMON_PATH}/scripts/catalog.py" \

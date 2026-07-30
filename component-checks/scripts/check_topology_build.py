@@ -8,12 +8,23 @@ actually instantiated in the deployment's topology FPP.  Exits non-zero on
 any failure.
 """
 
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from _fpp import strip_comments
 from _report import finish, make_parser
+
+
+def instantiated_in(component: str, topology_text: str) -> bool:
+    """True when an ``instance`` declaration in the (comment-stripped)
+    topology FPP text instantiates the component."""
+    pattern = re.compile(
+        rf"\binstance\s+\w+\s*:\s*(?:[\w.]*\.)?{re.escape(component)}\b"
+    )
+    return pattern.search(strip_comments(topology_text)) is not None
 
 
 def main(argv=None) -> int:
@@ -44,8 +55,8 @@ def main(argv=None) -> int:
         for deployment in args.deployment:
             topology_text = ""
             for fpp in sorted(deployment.rglob("*.fpp")):
-                topology_text += fpp.read_text(encoding="utf-8", errors="replace")
-            if component not in topology_text:
+                topology_text += fpp.read_text(encoding="utf-8", errors="replace") + "\n"
+            if not instantiated_in(component, topology_text):
                 failures.append(
                     f"component '{component}' is not instantiated in any topology FPP "
                     f"under {deployment}"

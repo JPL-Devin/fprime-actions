@@ -3,9 +3,11 @@
 
 Parses the FPP model and verifies the priority of each data product
 container produced by the component is configurable at runtime via a
-command or parameter (a command/parameter whose name mentions the
-container or priority).  Exits non-zero listing any container whose
-priority cannot be configured.
+command or parameter: either a container-specific knob (name mentions
+both the container and "priority") or a module-level priority knob
+(any command/parameter mentioning "priority", which satisfies every
+container).  Exits non-zero listing any container whose priority cannot
+be configured.
 
 Note: F´ ships ``Svc.DpCatalog``/``Svc.DpManager`` style deployments where
 priority is managed centrally; use ``--assume-managed`` to pass modules
@@ -39,14 +41,15 @@ def main(argv=None) -> int:
         skipped_reason = "priorities managed by framework (--assume-managed)"
 
     knobs = model.commands + model.parameters
+    generic_knob = any("priority" in knob.lower() for knob in knobs)
     failures = []
     if skipped_reason is None:
         for container in model.containers:
-            pattern = re.compile(
-                rf"({re.escape(container.name)}.*priority|priority.*{re.escape(container.name)}|^set.*priority|priority)",
+            specific = re.compile(
+                rf"({re.escape(container.name)}.*priority|priority.*{re.escape(container.name)})",
                 re.IGNORECASE,
             )
-            if not any(pattern.search(knob) for knob in knobs):
+            if not (generic_knob or any(specific.search(knob) for knob in knobs)):
                 failures.append(
                     f"container '{container.name}' priority is not configurable: no command or "
                     f"parameter mentioning 'priority' found"

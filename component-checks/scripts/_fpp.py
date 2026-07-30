@@ -25,23 +25,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
-#: Built-in special port keywords that do not require user handlers.
-SPECIAL_PORT_KINDS = (
-    "command recv",
-    "command reg",
-    "command resp",
-    "event",
-    "telemetry",
-    "text event",
-    "time get",
-    "param get",
-    "param set",
-    "product get",
-    "product recv",
-    "product request",
-    "product send",
-)
-
 _COMMENT_RE = re.compile(r"(#|@<|@)[^\n]*")
 _COMMAND_RE = re.compile(r"\b(?:async|sync|guarded)\s+command\s+(\w+)")
 _TELEMETRY_RE = re.compile(r"\btelemetry\s+(\w+)\s*:")

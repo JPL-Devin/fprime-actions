@@ -30,11 +30,15 @@ import _fpp  # noqa: E402
 import _requirements  # noqa: E402
 import check_build_warnings  # noqa: E402
 import check_command_handlers  # noqa: E402
+import check_coverage_threshold  # noqa: E402
 import check_dp_priorities  # noqa: E402
 import check_dp_priority_configurable  # noqa: E402
+import check_fpp_generate  # noqa: E402
 import check_include_dependencies  # noqa: E402
+import check_leaks  # noqa: E402
 import check_port_handlers  # noqa: E402
 import check_req_commands  # noqa: E402
+import check_req_data_products  # noqa: E402
 import check_req_design_mapping  # noqa: E402
 import check_req_events  # noqa: E402
 import check_req_parameters  # noqa: E402
@@ -44,6 +48,7 @@ import check_req_telemetry  # noqa: E402
 import check_req_verification  # noqa: E402
 import check_sm_actions  # noqa: E402
 import check_static_analysis  # noqa: E402
+import check_topology_build  # noqa: E402
 import check_ut_artifacts  # noqa: E402
 import check_ut_include_dependencies  # noqa: E402
 import run_checks  # noqa: E402
@@ -103,6 +108,7 @@ def test_requirement_checks() -> None:
         ("R2 telemetry", check_req_telemetry),
         ("R3 events", check_req_events),
         ("R4 parameters", check_req_parameters),
+        ("R5 data products", check_req_data_products),
         ("R6 ports", check_req_ports),
     ):
         code, out = run(mod.main, ["--module", str(WIDGET)])
@@ -113,6 +119,14 @@ def test_requirement_checks() -> None:
 
     code, out = run(check_req_verification.main, ["--module", str(WIDGET)])
     check("R8: passes", code == 0, out)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mod_dir = Path(tmp) / "Svc" / "Widget"
+        shutil.copytree(WIDGET, mod_dir)
+        sdd = mod_dir / "docs" / "sdd.md"
+        sdd.write_text(sdd.read_text().replace("| Analysis", "| TBD"))
+        code, out = run(check_req_verification.main, ["--module", str(mod_dir)])
+        check("R8: fails on missing method", code == 1 and "WID-004" in out, out)
 
     # Remove a requirement reference -> R1 fails
     with tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +162,10 @@ def test_design_checks() -> None:
         code, out = run(check_command_handlers.main, ["--module", str(mod_dir)])
         check("D2: fails on missing handler", code == 1 and "STOP" in out, out)
 
+        cpp.write_text(cpp.read_text().replace("dataIn_handler", "IGNORED"))
+        code, out = run(check_port_handlers.main, ["--module", str(mod_dir)])
+        check("D1: fails on missing handler", code == 1 and "dataIn" in out, out)
+
 
 def test_implementation_checks() -> None:
     code, out = run(check_include_dependencies.main, ["--module", str(WIDGET)])
@@ -156,6 +174,21 @@ def test_implementation_checks() -> None:
 
     code, out = run(check_dp_priority_configurable.main, ["--module", str(WIDGET)])
     check("I3: passes via SET_PRIORITY", code == 0, out)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mod_dir = Path(tmp) / "Svc" / "Widget"
+        shutil.copytree(WIDGET, mod_dir)
+        fpp = mod_dir / "Widget.fpp"
+        fpp.write_text(fpp.read_text().replace("SET_PRIORITY(priority: U32)", "SET_MODE(mode: U32)"))
+        code, out = run(check_dp_priority_configurable.main, ["--module", str(mod_dir)])
+        check("I3: fails without priority knob", code == 1 and "WidgetContainer" in out, out)
+
+    # System/platform and same-module includes are not F´ dependencies
+    dep = check_include_dependencies.dependency_of
+    for include in ("sys/socket.h", "arpa/inet.h", "linux/gpio.h", "mach/mach.h", "openssl/evp.h"):
+        check(f"I1: system include skipped ({include})", dep(include) is None)
+    check("I1: F´ include mapped", dep("Fw/Types/Assert.hpp") == "Fw/Types")
+    check("I1: test helper maps to module", dep("Drv/Ip/test/ut/SocketTestHelper.hpp") == "Drv/Ip")
 
     # I2 in log mode
     with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +268,20 @@ def test_unit_testing_checks() -> None:
     check("U3: passes (STest covers STest/Pick)", code == 0, out)
 
     with tempfile.TemporaryDirectory() as tmp:
+        mod_dir = Path(tmp) / "Svc" / "Widget"
+        shutil.copytree(WIDGET, mod_dir)
+        cmake = mod_dir / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace("STest", "Removed"))
+        code, out = run(check_ut_include_dependencies.main, ["--module", str(mod_dir)])
+        check("U3: fails on undeclared dependency", code == 1 and "STest/Pick" in out, out)
+
+    # U4 leak regex (sole leak detector on the valgrind output path)
+    leak_out = "==1== definitely lost: 8 bytes in 1 blocks\n==1== ERROR SUMMARY: 2 errors"
+    check("U4: leak regex matches", len(check_leaks._LEAK_RE.findall(leak_out)) == 2)
+    clean_out = "==1== definitely lost: 0 bytes\n==1== ERROR SUMMARY: 0 errors"
+    check("U4: leak regex clean", not check_leaks._LEAK_RE.findall(clean_out))
+
+    with tempfile.TemporaryDirectory() as tmp:
         artifacts = Path(tmp)
         code, out = run(
             check_ut_artifacts.main,
@@ -251,10 +298,49 @@ def test_unit_testing_checks() -> None:
         )
         check("U1: passes when present", code == 0, out)
 
+        cov = Path(tmp) / "cov-summary.json"
+        cov.write_text(json.dumps({"line_total": 100, "line_covered": 91}))
+        code, out = run(
+            check_coverage_threshold.main,
+            ["--module", "Svc/Widget", "--summary-json", str(cov)],
+        )
+        check("U5: passes above threshold", code == 0, out)
+        code, out = run(
+            check_coverage_threshold.main,
+            ["--module", "Svc/Widget", "--summary-json", str(cov), "--threshold", "95"],
+        )
+        check("U5: fails below threshold", code == 1 and "91.00%" in out, out)
+
+
+def test_build_level_checks_offline() -> None:
+    # D6 skips cleanly when fpp-check is unavailable
+    import shutil as _shutil
+
+    original_which = _shutil.which
+    _shutil.which = lambda _name: None
+    try:
+        code, out = run(check_fpp_generate.main, ["--module", str(WIDGET)])
+    finally:
+        _shutil.which = original_which
+    check("D6: skips without fpp-check", code == 0 and "SKIP" in out, out)
+
+    # C1 topology-instantiation scan (pure text path)
+    topo = "instance widget: Svc.Widget base id 0x100\n"
+    check("C1: instance found", check_topology_build.instantiated_in("Widget", topo))
+    check(
+        "C1: commented instance ignored",
+        not check_topology_build.instantiated_in("Widget", "# " + topo),
+    )
+    check(
+        "C1: name in comment ignored",
+        not check_topology_build.instantiated_in("Widget", "@ Widget goes here\n"),
+    )
+
 
 def test_checks_tier() -> None:
     check("tier: all pass", checks_tier(10, 0) == "platinum")
     check("tier: 90%+", checks_tier(19, 1) == "gold")
+    check("tier: 90% boundary", checks_tier(9, 1) == "gold")
     check("tier: 80%+", checks_tier(8, 2) == "silver")
     check("tier: below", checks_tier(1, 9) == "bronze")
     check("tier: none", checks_tier(0, 0) == "bronze")
@@ -307,8 +393,14 @@ def test_run_checks_and_catalog() -> None:
         check("run_checks: extra results merged", "U5" in ids)
         check(
             "run_checks: counts",
-            summary["failed"] >= 4 and summary["passed"] >= 8,
-            json.dumps({"passed": summary["passed"], "failed": summary["failed"]}),
+            summary["passed"] == 12 and summary["failed"] == 5 and summary["skipped"] == 0,
+            json.dumps(
+                {
+                    "passed": summary["passed"],
+                    "failed": summary["failed"],
+                    "skipped": summary["skipped"],
+                }
+            ),
         )
         page = (dest / "Svc" / "Widget" / "checks" / "index.html").read_text()
         check("run_checks: page has fail badge", "status-fail" in page)
@@ -341,7 +433,7 @@ def test_run_checks_and_catalog() -> None:
         cat = json.loads((dest / "catalog.json").read_text())
         entry = cat["modules"][0]
         check("catalog: checks entry", entry["checks"] is not None)
-        check("catalog: checks tier", entry["tiers"]["checks"] in ("gold", "silver", "bronze"))
+        check("catalog: checks tier", entry["tiers"]["checks"] == "bronze", entry["tiers"]["checks"])
         module_page = (dest / "Svc" / "Widget" / "index.html").read_text()
         check("catalog: module page Checks row", "<td>Checks</td>" in module_page)
 
@@ -355,6 +447,7 @@ def main() -> int:
         test_implementation_checks,
         test_static_analysis_check,
         test_unit_testing_checks,
+        test_build_level_checks_offline,
         test_checks_tier,
         test_run_checks_and_catalog,
     ]

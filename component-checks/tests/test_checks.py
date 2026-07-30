@@ -181,7 +181,11 @@ def test_implementation_checks() -> None:
         fpp = mod_dir / "Widget.fpp"
         fpp.write_text(fpp.read_text().replace("SET_PRIORITY(priority: U32)", "SET_MODE(mode: U32)"))
         code, out = run(check_dp_priority_configurable.main, ["--module", str(mod_dir)])
-        check("I3: fails without priority knob", code == 1 and "WidgetContainer" in out, out)
+        check(
+            "I3: fails without priority knob",
+            code == 1 and "WidgetContainer" in out and "OrphanContainer" in out,
+            out,
+        )
 
     # System/platform and same-module includes are not F´ dependencies
     dep = check_include_dependencies.dependency_of

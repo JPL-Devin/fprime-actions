@@ -405,6 +405,34 @@ def test_run_checks_and_catalog() -> None:
         page = (dest / "Svc" / "Widget" / "checks" / "index.html").read_text()
         check("run_checks: page has fail badge", "status-fail" in page)
 
+        bogus = Path(tmp) / "bogus.jsonl"
+        bogus.write_text(json.dumps({"id": "X9", "module": "Svc/Nope", "status": "pass"}) + "\n")
+        code, out = run(
+            run_checks.main,
+            [
+                "--root", str(root),
+                "--dest", str(dest),
+                "--modules-jsonl", str(modules_jsonl),
+                "--extra-results", str(bogus),
+                "--ref", "devel",
+                "--commit", "abc1234def",
+            ],
+        )
+        ids2 = {c["id"] for c in json.loads(summary_path.read_text())["checks"]}
+        check("run_checks: unknown-module result dropped", code == 0 and "X9" not in ids2, out)
+
+        rendered = run_checks.render_module_page(
+            "Svc/Widget",
+            [{"id": "Z1", "name": "Z", "category": "requirements", "status": "bogus"}],
+            ref="devel",
+            commit="abc1234def",
+            generated_at="2026-01-01T00:00:00Z",
+        )
+        check(
+            "render_module_page: unknown status sanitized to skip",
+            "status-skip" in rendered and "status-bogus" not in rendered,
+        )
+
         code, _ = run(
             run_checks.main,
             [

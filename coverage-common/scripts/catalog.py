@@ -41,7 +41,7 @@ from typing import Iterable, List, Optional
 
 from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
-from _tiers import CoverageThresholds, codeql_tier, coverage_tier
+from _tiers import TIERS, CoverageThresholds, checks_tier, codeql_tier, coverage_tier
 
 SCHEMA_VERSION = 2
 
@@ -63,7 +63,7 @@ h1 { margin: 0 0 0.25rem 0; font-size: 1.4rem; }
 details { border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 0.5rem; background: #ffffff; }
 details > summary {
   cursor: pointer; padding: 0.5rem 0.75rem; font-weight: 600;
-  display: grid; grid-template-columns: 1fr 11rem 11rem 11rem; gap: 0.5rem;
+  display: grid; grid-template-columns: 1fr 11rem 11rem 11rem 11rem; gap: 0.5rem;
   align-items: baseline; list-style: none;
 }
 details > summary::-webkit-details-marker { display: none; }
@@ -142,6 +142,19 @@ def load_codeql_summary(path: Path) -> Optional[dict]:
     return doc
 
 
+def load_checks_summary(path: Path) -> Optional[dict]:
+    """Load a checklist-checks summary.json, returning None on failure."""
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict) or "checks" not in doc:
+        return None
+    return doc
+
+
 @dataclass
 class ModuleEntry:
     """One row in the catalog."""
@@ -154,6 +167,8 @@ class ModuleEntry:
     int_report: str
     codeql_summary: Optional[dict]
     codeql_report: str
+    checks_summary: Optional[dict] = None
+    checks_report: str = ""
     module_report: Optional[str] = None  # roll-up page, when one is written
 
     @property
@@ -206,6 +221,23 @@ class Group:
                 worst_rank = worst
         return present, worst_rank
 
+    def checks_worst(self) -> tuple[bool, str]:
+        """(any checks data present, worst tier across modules)."""
+        present = False
+        worst_idx = None
+        for m in self.modules:
+            if m.checks_summary is None:
+                continue
+            present = True
+            tier = checks_tier(
+                int(m.checks_summary.get("passed", 0)),
+                int(m.checks_summary.get("failed", 0)),
+            )
+            idx = TIERS.index(tier)
+            if worst_idx is None or idx > worst_idx:
+                worst_idx = idx
+        return present, (TIERS[worst_idx] if worst_idx is not None else "platinum")
+
 
 def _group_modules(entries: Iterable[ModuleEntry]) -> List[Group]:
     """Group entries by top-level directory, sorted alphabetically.
@@ -257,6 +289,16 @@ def _codeql_cell(entry: ModuleEntry) -> str:
     return f'{badge_html(tier)} <a href="{html.escape(entry.codeql_report)}">{label}</a>'
 
 
+def _checks_cell(entry: ModuleEntry) -> str:
+    if entry.checks_summary is None:
+        return '<span class="no-cov">&mdash;</span>'
+    passed = int(entry.checks_summary.get("passed", 0))
+    failed = int(entry.checks_summary.get("failed", 0))
+    tier = checks_tier(passed, failed)
+    label = f"{passed} pass" if failed == 0 else f"{failed} fail / {passed} pass"
+    return f'{badge_html(tier)} <a href="{html.escape(entry.checks_report)}">{label}</a>'
+
+
 def _render_group_header(group: Group, thresholds: CoverageThresholds) -> str:
     rollup = group.rollup()
     has_coverage = rollup.line.total > 0
@@ -269,7 +311,12 @@ def _render_group_header(group: Group, thresholds: CoverageThresholds) -> str:
     int_html = '<span class="no-cov">&mdash;</span>'
     present, worst = group.codeql_worst()
     codeql_html = badge_html(codeql_tier(worst)) if present else '<span class="no-cov">&mdash;</span>'
-    return f"<span>{label_esc}</span><span>{ut_html}</span><span>{int_html}</span><span>{codeql_html}</span>"
+    checks_present, checks_worst = group.checks_worst()
+    checks_html = badge_html(checks_worst) if checks_present else '<span class="no-cov">&mdash;</span>'
+    return (
+        f"<span>{label_esc}</span><span>{ut_html}</span><span>{int_html}</span>"
+        f"<span>{codeql_html}</span><span>{checks_html}</span>"
+    )
 
 
 def _render_group(group: Group, thresholds: CoverageThresholds) -> str:
@@ -290,13 +337,15 @@ def _render_group(group: Group, thresholds: CoverageThresholds) -> str:
             f'<td class="cell">{ut_html}</td>'
             f'<td class="cell">{_int_cell(mod, thresholds)}</td>'
             f'<td class="cell">{_codeql_cell(mod)}</td>'
+            f'<td class="cell">{_checks_cell(mod)}</td>'
             f"</tr>"
         )
 
     return (
         f"<details{open_attr}><summary>{header}</summary>"
         f'<table><thead><tr><th>Module</th><th class="cell">UT Coverage</th>'
-        f'<th class="cell">INT Coverage</th><th class="cell">CodeQL</th></tr></thead>'
+        f'<th class="cell">INT Coverage</th><th class="cell">CodeQL</th>'
+        f'<th class="cell">Checks</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
         f"</details>"
     )
@@ -313,6 +362,7 @@ def render_module_index_html(
     coverage_subdir: str,
     int_subdir: str,
     codeql_subdir: str,
+    checks_subdir: str = "checks",
 ) -> str:
     """Render a module's roll-up page linking its published artifact subtrees.
 
@@ -350,6 +400,19 @@ def render_module_index_html(
     else:
         codeql_html = '<span class="no-cov">no data</span>'
     rows.append(f"<tr><td>CodeQL</td><td>{codeql_html}</td></tr>")
+
+    if entry.checks_summary is not None:
+        passed = int(entry.checks_summary.get("passed", 0))
+        failed = int(entry.checks_summary.get("failed", 0))
+        skipped = int(entry.checks_summary.get("skipped", 0))
+        tier = checks_tier(passed, failed)
+        label = f"{passed} pass" if failed == 0 else f"{failed} fail / {passed} pass"
+        if skipped:
+            label += f" ({skipped} skipped)"
+        checks_html = f'{badge_html(tier)} <a href="{checks_subdir}/index.html">{label}</a>'
+    else:
+        checks_html = '<span class="no-cov">no data</span>'
+    rows.append(f"<tr><td>Checks</td><td>{checks_html}</td></tr>")
 
     depth = entry.path.count("/") + 1
     checklist_href = "../" * depth + "index.html"
@@ -455,6 +518,18 @@ def build_catalog(
             codeql_entry = dict(m.codeql_summary)
             codeql_entry["report"] = m.codeql_report
             codeql_entry.setdefault("tier", codeql_tier(m.codeql_summary.get("worst")))
+        checks_entry = None
+        if m.checks_summary is not None:
+            checks_entry = {
+                "passed": int(m.checks_summary.get("passed", 0)),
+                "failed": int(m.checks_summary.get("failed", 0)),
+                "skipped": int(m.checks_summary.get("skipped", 0)),
+                "report": m.checks_report,
+                "tier": checks_tier(
+                    int(m.checks_summary.get("passed", 0)),
+                    int(m.checks_summary.get("failed", 0)),
+                ),
+            }
         out_modules.append(
             {
                 "path": m.path,
@@ -463,6 +538,7 @@ def build_catalog(
                 "ut": ut_entry,
                 "int": int_entry,
                 "codeql": codeql_entry,
+                "checks": checks_entry,
                 "tiers": {
                     "ut": coverage_tier(
                         m.ut_summary.line.percent if m.has_coverage else 0.0,
@@ -479,6 +555,7 @@ def build_catalog(
                         if m.codeql_summary is not None
                         else None
                     ),
+                    "checks": checks_entry["tier"] if checks_entry is not None else None,
                 },
             }
         )
@@ -539,6 +616,11 @@ def main(argv=None) -> int:
         default="codeql",
         help='Subdirectory under each module holding CodeQL findings (default: "codeql")',
     )
+    parser.add_argument(
+        "--checks-subdirectory",
+        default="checks",
+        help='Subdirectory under each module holding checklist-check results (default: "checks")',
+    )
     parser.add_argument("--ref", required=True, help="Source ref name (branch or tag)")
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
     parser.add_argument("--commit", required=True, help="Source commit SHA")
@@ -563,6 +645,7 @@ def main(argv=None) -> int:
     subdir_segment = f"{subdir}/" if subdir else ""
     int_subdir = args.int_coverage_subdirectory or "int-coverage"
     codeql_subdir = args.codeql_subdirectory or "codeql"
+    checks_subdir = args.checks_subdirectory or "checks"
     thresholds = coverage_thresholds(load_config(args.config))
 
     generated_at = args.generated_at or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -582,6 +665,7 @@ def main(argv=None) -> int:
             )
             int_summary = load_summary(mod_dir / int_subdir / "summary.json")
             codeql_summary = load_codeql_summary(mod_dir / codeql_subdir / "summary.json")
+            checks_summary = load_checks_summary(mod_dir / checks_subdir / "summary.json")
             entries.append(
                 ModuleEntry(
                     path=path,
@@ -592,6 +676,8 @@ def main(argv=None) -> int:
                     int_report=f"{path}/{int_subdir}/index.html",
                     codeql_summary=codeql_summary,
                     codeql_report=f"{path}/{codeql_subdir}/index.html",
+                    checks_summary=checks_summary,
+                    checks_report=f"{path}/{checks_subdir}/index.html",
                     module_report=f"{path}/index.html" if subdir else None,
                 )
             )
@@ -613,6 +699,7 @@ def main(argv=None) -> int:
                     coverage_subdir=subdir,
                     int_subdir=int_subdir,
                     codeql_subdir=codeql_subdir,
+                    checks_subdir=checks_subdir,
                 ),
                 encoding="utf-8",
             )

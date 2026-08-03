@@ -1,0 +1,122 @@
+name: "F´ component checklist checks (publish)"
+description: >
+  Run the static component checklist checks (requirements traceability,
+  design, implementation, and unit-test source checks) for every discovered
+  module, publish per-module results onto the per-base-branch baseline
+  branch (coverage/<ref-name>), and regenerate the checklist landing page
+  so each module row gains a "Checks" badge next to its coverage and CodeQL
+  badges.  Results from build-level checks (D6, I2, I4, U1, U4, U5, C1) run
+  in earlier steps can be merged in via extra-results.  Intended to run on
+  push events with permissions: { contents: write }.  Skipped on fork
+  pushes.
+inputs:
+  working-directory:
+    description: "Repository checkout root (modules are discovered here)"
+    required: false
+    default: "."
+  baseline-branch-prefix:
+    description: "Prefix applied to <ref-name> to form the baseline branch name"
+    required: false
+    default: "coverage"
+  checks-subdirectory:
+    description: "Subdirectory under each module in the baseline branch holding check results"
+    required: false
+    default: "checks"
+  extra-results:
+    description: >
+      Newline-separated list of JSON-Lines result files from build-level
+      check scripts (each written via --json-output) to merge into the
+      published summaries.
+    required: false
+    default: ""
+  config-file:
+    description: >
+      Path (relative to working-directory) of the checklist config file
+      holding coverage badge-tier thresholds and future reporting settings.
+      Checks-badge tiers use fixed cut-offs (platinum all pass, gold >= 90%,
+      silver >= 80%) and are not configurable here.  Defaults apply when the
+      file does not exist.
+    required: false
+    default: ".github/module-checklist.yml"
+
+outputs:
+  baseline-branch:
+    description: "Name of the baseline branch that was written"
+    value: ${{ steps.publish.outputs.baseline-branch }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Compute ref / ref-type"
+      id: ref
+      shell: bash
+      env:
+        REF: ${{ github.ref }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        echo "ref-name=${REF_NAME}" >> "$GITHUB_OUTPUT"
+        case "$REF" in
+          refs/tags/*) echo "ref-type=tag"    >> "$GITHUB_OUTPUT" ;;
+          *)           echo "ref-type=branch" >> "$GITHUB_OUTPUT" ;;
+        esac
+
+    - name: "Publish check results to baseline branch"
+      id: publish
+      if: github.event.repository.fork == false
+      working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      env:
+        CHECKS_PATH: ${{ github.action_path }}
+        COMMON_PATH: ${{ github.action_path }}/../coverage-common
+        BASELINE_PREFIX: ${{ inputs.baseline-branch-prefix }}
+        REF_NAME: ${{ steps.ref.outputs.ref-name }}
+        REF_TYPE: ${{ steps.ref.outputs.ref-type }}
+        CHECKS_SUBDIR: ${{ inputs.checks-subdirectory }}
+        EXTRA_RESULTS: ${{ inputs.extra-results }}
+        COMMIT_SHA: ${{ github.sha }}
+        CONFIG_FILE: ${{ inputs.config-file }}
+      run: |
+        set -e
+        BASELINE_BRANCH="${BASELINE_PREFIX}/${REF_NAME}"
+        echo "baseline-branch=${BASELINE_BRANCH}" >> "$GITHUB_OUTPUT"
+
+        MODULES_JSONL="${RUNNER_TEMP:-/tmp}/checks-modules.jsonl"
+        python3 "${COMMON_PATH}/scripts/discover.py" --root . > "$MODULES_JSONL"
+        export MODULES_JSONL
+
+        # Pass the extra-results list through a file so paths with spaces
+        # or shell metacharacters survive intact.
+        EXTRA_LIST="${RUNNER_TEMP:-/tmp}/checks-extra-results.txt"
+        printf '%s\n' "$EXTRA_RESULTS" | sed '/^[[:space:]]*$/d' > "$EXTRA_LIST"
+        export EXTRA_LIST
+
+        # Resolve the config path against the source checkout so it is still
+        # found when the command runs against the baseline worktree.
+        CONFIG_ABS="$(pwd)/${CONFIG_FILE}"
+        export CONFIG_ABS
+        REPO_ROOT="$(pwd)"
+        export REPO_ROOT
+
+        export PYTHONPATH="${CHECKS_PATH}/scripts:${PYTHONPATH:-}"
+
+        bash "${COMMON_PATH}/scripts/publish_baseline.sh" \
+          "$BASELINE_BRANCH" "$COMMIT_SHA" "checks" \
+          bash -c 'EXTRA_ARGS=(); while IFS= read -r f; do
+            EXTRA_ARGS+=(--extra-results "$f")
+          done < "$EXTRA_LIST"
+          python3 "${CHECKS_PATH}/scripts/run_checks.py" \
+            --root "$REPO_ROOT" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --checks-subdirectory "$CHECKS_SUBDIR" \
+            "${EXTRA_ARGS[@]}" \
+            --ref "$REF_NAME" \
+            --commit "$COMMIT_SHA" \
+          && python3 "${COMMON_PATH}/scripts/catalog.py" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --checks-subdirectory "$CHECKS_SUBDIR" \
+            --ref "$REF_NAME" \
+            --ref-type "$REF_TYPE" \
+            --commit "$COMMIT_SHA" \
+            --config "$CONFIG_ABS"'

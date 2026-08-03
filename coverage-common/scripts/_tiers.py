@@ -75,3 +75,23 @@ def codeql_tier(worst_severity: str | None) -> str:
     if worst_severity == "low":
         return "silver"
     return "bronze"
+
+
+def checks_tier(passed: int, failed: int) -> str:
+    """Map checklist-check pass/fail counts to a tier.
+
+    All passing is platinum; otherwise the pass ratio maps through the
+    default coverage-style cut-offs (>= 90% gold, >= 80% silver, else
+    bronze).  No graded checks at all is bronze.
+    """
+    graded = passed + failed
+    if graded <= 0:
+        return "bronze"
+    if failed == 0:
+        return "platinum"
+    ratio = 100.0 * passed / graded
+    if ratio >= 90.0:
+        return "gold"
+    if ratio >= 80.0:
+        return "silver"
+    return "bronze"

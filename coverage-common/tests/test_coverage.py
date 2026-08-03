@@ -376,7 +376,7 @@ def test_catalog_groups_and_rollup():
         assert rc == 0
 
         cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
-        assert cat_doc["schema"] == 3
+        assert cat_doc["schema"] == 4
         assert cat_doc["ref"] == "devel"
         assert cat_doc["commit"] == "deadbeefcafe1234"
         assert cat_doc["thresholds"] == {"platinum": 95.0, "gold": 90.0, "silver": 80.0}

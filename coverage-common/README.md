@@ -84,7 +84,11 @@ test fixtures.
   `coverage-check`).
 * `mirror.py` &mdash; copies coverage outputs into the baseline worktree,
   writes placeholder pages, invokes `catalog.py` (used by `coverage-update`).
-* `catalog.py` &mdash; produces `catalog.json` + folder-tree `index.html`.
+* `catalog.py` &mdash; produces `catalog.json` (schema v4) + folder-tree
+  `index.html`. Renders UT/INT coverage, CodeQL, and Checks columns; per-module
+  `checks/summary.json` files (published by `component-checks`, discovered via
+  `--checks-subdirectory`, default `checks`) add a `checks` entry and a
+  `tiers.checks` tier to each module's `catalog.json` record.
 * `_summary.py` &mdash; shared gcovr `--json-summary` reader.
 
 ## Tests

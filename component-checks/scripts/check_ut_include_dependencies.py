@@ -11,7 +11,11 @@ import sys
 
 from _report import finish, make_parser
 from _sources import includes_of, test_sources
-from check_include_dependencies import declared_in_cmake, dependency_of
+from check_include_dependencies import (
+    declared_in_cmake,
+    dependency_of,
+    is_reportable_dependency,
+)
 
 
 def main(argv=None) -> int:
@@ -39,13 +43,14 @@ def main(argv=None) -> int:
             if sub != cmake_path:
                 cmake_text += sub.read_text(encoding="utf-8", errors="replace")
 
-    module_posix = args.module.resolve().as_posix()
     deps_needed = {}
     for include in includes_of(sources):
         dep = dependency_of(include)
         if dep is None:
             continue
-        if module_posix.endswith(dep) or dep.startswith(("test", "ut")):
+        if dep.startswith(("test", "ut")) or not is_reportable_dependency(
+            dep, args.module
+        ):
             continue
         deps_needed.setdefault(dep, include)
 

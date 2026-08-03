@@ -193,6 +193,42 @@ def test_implementation_checks() -> None:
         check(f"I1: system include skipped ({include})", dep(include) is None)
     check("I1: F´ include mapped", dep("Fw/Types/Assert.hpp") == "Fw/Types")
     check("I1: test helper maps to module", dep("Drv/Ip/test/ut/SocketTestHelper.hpp") == "Drv/Ip")
+    check("I1: root umbrella header skipped", dep("Fw/FPrimeBasicTypes.hpp") is None)
+    check(
+        "I1: directly-included source skipped",
+        dep("FppTest/component/common/typed.cpp") is None,
+    )
+
+    # Ancestor umbrellas and non-target shared directories are not reportable
+    reportable = check_include_dependencies.is_reportable_dependency
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        module = root / "FppTest" / "component" / "queued"
+        module.mkdir(parents=True)
+        shared = root / "FppTest" / "component" / "common"
+        shared.mkdir()
+        target = root / "Fw" / "Buffer"
+        target.mkdir(parents=True)
+        (target / "CMakeLists.txt").write_text("register_fprime_module()\n")
+        check(
+            "I1: non-target shared dir not reportable",
+            not reportable("FppTest/component/common", module),
+        )
+        check(
+            "I1: registered target dir reportable",
+            reportable("Fw/Buffer", module),
+        )
+        check(
+            "I1: ancestor umbrella not reportable",
+            not reportable("FppTest", module),
+        )
+        own_config = module / "QueuedConfig"
+        own_config.mkdir()
+        (own_config / "CMakeLists.txt").write_text("register_fprime_config()\n")
+        check(
+            "I1: module's own config subdir not reportable",
+            not reportable("QueuedConfig", module),
+        )
 
     # I2 in log mode
     with tempfile.TemporaryDirectory() as tmp:

@@ -13,16 +13,28 @@ headers under a lowercase top-level directory (``sys/socket.h``,
 ...; F´ module directories are CapitalCase), the module's own headers
 (including its test helpers), generated autocode headers
 (``*Ac.hpp``/``*Ac.h``), and ``config``/``Fpp`` headers are skipped.
+Root framework convenience headers (``Fw/FPrimeBasicTypes.hpp``: the
+``Fw`` directory only registers an umbrella INTERFACE target), directly
+included source files (``FppTest/component/common/typed.cpp``), and
+includes resolving to a directory with no CMakeLists.txt (shared
+source directories that register no target) are also skipped.
 """
 
 import re
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from _report import finish, make_parser
 from _sources import TEST_DIR_NAMES, impl_sources, includes_of
 
 _SKIP_TOP_DIRS = {"config", "fpp", "gtest", "gmock"}
+
+# Directories registering only an umbrella INTERFACE target: headers living
+# directly in them (e.g. Fw/FPrimeBasicTypes.hpp) belong to no module and
+# recommending the umbrella would make its own members depend on it.
+_UMBRELLA_ONLY_DIRS = {"Fw"}
+
+_SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
 
 
 def dependency_of(include: str) -> str | None:
@@ -32,6 +44,8 @@ def dependency_of(include: str) -> str | None:
         return None  # system or local header
     if path.name.endswith(("Ac.hpp", "Ac.h", "Ac.cpp")):
         return None  # generated autocode
+    if path.suffix.lower() in _SOURCE_SUFFIXES:
+        return None  # directly-included source file, not a library dependency
     top = path.parts[0]
     if top.lower() in _SKIP_TOP_DIRS:
         return None
@@ -45,7 +59,33 @@ def dependency_of(include: str) -> str | None:
             break
     if not parts:
         return None
-    return "/".join(parts)
+    dep = "/".join(parts)
+    if dep in _UMBRELLA_ONLY_DIRS:
+        return None  # root convenience header of an umbrella-only directory
+    return dep
+
+
+def is_reportable_dependency(dep: str, module_dir: Path) -> bool:
+    """False when the dependency should not be reported for this module:
+    the module lives inside the dependency directory (an ancestor umbrella
+    such as ``Fw`` for ``Fw/Types``), the dependency is a subdirectory of
+    the module itself (e.g. a subtopology config module), or the dependency
+    directory exists in the tree but registers no CMake target (no
+    CMakeLists.txt -- a shared source directory such as
+    ``FppTest/component/common``)."""
+    module_resolved = module_dir.resolve()
+    dep_parts = tuple(dep.split("/"))
+    ancestors = [module_resolved] + list(module_resolved.parents)
+    for ancestor in ancestors:
+        if ancestor.parts[-len(dep_parts):] == dep_parts:
+            return False  # the module itself or an enclosing directory
+    for parent in ancestors:
+        candidate = parent / dep
+        if candidate.is_dir():
+            if parent == module_resolved:
+                return False  # the module's own subdirectory (e.g. a config module)
+            return (candidate / "CMakeLists.txt").is_file()
+    return True  # not found in the tree; report conservatively
 
 
 def declared_in_cmake(dep: str, cmake_text: str) -> bool:
@@ -81,14 +121,13 @@ def main(argv=None) -> int:
     else:
         cmake_text = cmake_path.read_text(encoding="utf-8", errors="replace")
 
-    module_posix = args.module.resolve().as_posix()
     deps_needed = {}
     for include in includes_of(sources):
         dep = dependency_of(include)
         if dep is None:
             continue
-        if module_posix.endswith(dep):
-            continue  # header within this module
+        if not is_reportable_dependency(dep, args.module):
+            continue
         deps_needed.setdefault(dep, include)
 
     failures = []

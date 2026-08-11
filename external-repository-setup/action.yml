@@ -54,6 +54,9 @@ runs:
         key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           pip-${{ runner.os }}-
+    - name: "Enable ccache"
+      if: ${{ inputs.stage == 'all' || inputs.stage == 'build' }}
+      uses: nasa/fprime-actions/ccache@devel
     - name: "Base Python"
       run: |
         python3 -m venv ci-venv

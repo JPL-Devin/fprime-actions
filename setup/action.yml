@@ -5,6 +5,14 @@ inputs:
     required: true
     default: $GITHUB_WORKSPACE
     description: "Path to the root of the F´ repository"
+  ccache:
+    required: false
+    default: "true"
+    description: "Enable ccache backed by the GitHub Actions cache"
+  ccache-key-suffix:
+    required: false
+    default: ""
+    description: "Extra ccache key discriminator (e.g. a matrix value)"
 runs:
   using: "composite"
   steps:
@@ -30,6 +38,11 @@ runs:
       key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
       restore-keys: |
         pip-${{ runner.os }}-
+  - name: "Enable ccache"
+    if: inputs.ccache == 'true'
+    uses: nasa/fprime-actions/ccache@devel
+    with:
+      key-suffix: ${{ inputs.ccache-key-suffix }}
   - run: pip3 install setuptools_scm wheel urllib3
     shell: bash
   - name: "Install F´ requirements"

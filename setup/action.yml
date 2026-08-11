@@ -19,6 +19,17 @@ runs:
       python-version: "3.x"
   - run: git fetch --tags
     shell: bash
+  # Cache pip's download/wheel cache so requirement installs avoid
+  # re-downloading packages on every job.
+  - name: "Cache pip downloads"
+    uses: actions/cache@v4
+    with:
+      path: |
+        ~/.cache/pip
+        ~/Library/Caches/pip
+      key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+      restore-keys: |
+        pip-${{ runner.os }}-
   - run: pip3 install setuptools_scm wheel urllib3
     shell: bash
   - name: "Install F´ requirements"

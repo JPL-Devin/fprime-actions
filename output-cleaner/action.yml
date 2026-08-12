@@ -1,10 +1,17 @@
 name: "F´ Output Cleaner Setup"
-description: "Add the output-cleaner log filter to the PATH for use in later steps"
+description: "Install the output-cleaner log filter for use in later steps"
 runs:
   using: "composite"
   steps:
-    - name: "Add output-cleaner to PATH"
+    - name: "Install output-cleaner"
       shell: bash
       run: |
         chmod +x "${GITHUB_ACTION_PATH}/output-cleaner"
-        echo "${GITHUB_ACTION_PATH}" >> "${GITHUB_PATH}"
+        # Prefer /usr/local/bin so the tool survives PATH resets (e.g. su);
+        # fall back to GITHUB_PATH when not writable.
+        if cp "${GITHUB_ACTION_PATH}/output-cleaner" /usr/local/bin/output-cleaner 2>/dev/null; then
+          echo "Installed output-cleaner to /usr/local/bin"
+        else
+          echo "${GITHUB_ACTION_PATH}" >> "${GITHUB_PATH}"
+          echo "Added ${GITHUB_ACTION_PATH} to PATH"
+        fi

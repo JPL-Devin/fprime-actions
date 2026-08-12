@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Filter transient terminal output from piped build logs.
+
+Reads stdin and writes stdout, emulating what a smart terminal would leave
+visible: segments overwritten via carriage returns are dropped (only the
+final segment of each line is kept), and transient status lines (e.g. ninja
+"[N/M] target" progress) are collapsed so only the last one is printed at
+end of stream. When workflow debug mode is enabled (RUNNER_DEBUG=1), all
+output is passed through unmodified.
+
+Usage:
+    fprime-util build ... 2>&1 | output-cleaner
+
+Use `set -o pipefail` so the pipeline preserves the build's exit status.
+"""
+
+import os
+import re
+import shutil
+import sys
+
+TRANSIENT_PATTERNS = [
+    re.compile(r"^\[\d+/\d+\]"),  # ninja progress lines
+    re.compile(r"^\[\s*\d+%\]"),  # make progress lines
+]
+
+
+def is_transient(line: str) -> bool:
+    return any(pattern.match(line) for pattern in TRANSIENT_PATTERNS)
+
+
+def clean(in_stream, out_stream) -> None:
+    pending = None
+    for raw in in_stream:
+        line = raw.rstrip("\r\n")
+        # A carriage return overwrites everything before it; keep the
+        # final non-empty segment, as a terminal would display.
+        segments = [segment for segment in line.split("\r") if segment]
+        line = segments[-1] if segments else ""
+        if is_transient(line):
+            pending = line
+            continue
+        print(line, file=out_stream)
+    if pending is not None:
+        print(pending, file=out_stream)
+
+
+def main() -> int:
+    debug = os.environ.get("RUNNER_DEBUG", "0") == "1"
+    if debug:
+        shutil.copyfileobj(sys.stdin, sys.stdout)
+        return 0
+    clean(sys.stdin, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

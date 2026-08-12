@@ -44,8 +44,23 @@ runs:
         fetch-tags: true
         persist-credentials: false
     # Cache pip's download/wheel cache so requirement installs avoid
-    # re-downloading packages on every job.
+    # re-downloading packages on every job.  Caches saved from pull_request
+    # runs are scoped to that PR's merge ref, invisible to other PRs, and
+    # only consume the repository's shared 10 GB cache quota — so PR runs
+    # restore-only and the cache is saved from default-branch runs
+    # (schedule / push / dispatch), which every PR can read.
+    - name: "Cache pip downloads (restore only)"
+      if: github.event_name == 'pull_request'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/Library/Caches/pip
+        key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          pip-${{ runner.os }}-
     - name: "Cache pip downloads"
+      if: github.event_name != 'pull_request'
       uses: actions/cache@v4
       with:
         path: |

@@ -1,15 +1,20 @@
 name: "F´ Integration Tests"
-description: "Start GDS and flight software, run pytest integration tests, optionally check for memory leaks with valgrind"
+description: "Start a ground system (fprime-gds or fprime-yamcs) and flight software, run pytest integration tests, optionally check for memory leaks with valgrind"
 inputs:
+  ground-system:
+    description: "Ground system used to run the tests: fprime-gds or fprime-yamcs"
+    required: false
+    default: "fprime-gds"
   gds-working-directory:
-    description: "Deployment directory to start fprime-gds from (e.g. Ref/)"
+    description: "Deployment directory to start the ground system from (e.g. Ref/)"
     required: true
   test-working-directory:
     description: "Directory to run pytest from (e.g. Ref/test/int)"
     required: true
   binary:
-    description: "Path to the FSW binary to run (relative to gds-working-directory)"
-    required: true
+    description: "Path to the FSW binary to run (relative to gds-working-directory). Unused with fprime-yamcs, which manages the binary itself"
+    required: false
+    default: ""
   binary-args:
     description: "Arguments passed to the FSW binary"
     required: false
@@ -19,7 +24,7 @@ inputs:
     required: false
     default: "300"
   gds-args:
-    description: "Extra arguments passed to fprime-gds (e.g. --dictionary path)"
+    description: "Extra arguments passed to the ground system (e.g. --dictionary path, or -d <deployment> for fprime-yamcs)"
     required: false
     default: ""
   pytest-args:
@@ -40,6 +45,7 @@ runs:
     - name: "Integration Tests"
       shell: bash
       env:
+        GROUND_SYSTEM: ${{ inputs.ground-system }}
         GDS_WORKING_DIR: ${{ inputs.gds-working-directory }}
         TEST_WORKING_DIR: ${{ inputs.test-working-directory }}
         GDS_ARGS: ${{ inputs.gds-args }}
@@ -59,44 +65,71 @@ runs:
         }
         trap cleanup EXIT
 
-        # Start GDS headless without the app (-n); we manage the binary separately
-        fprime-gds -n -g none -l gds-logs ${GDS_ARGS} \
-          > gds-logs/fprime-gds.stdout.log 2> gds-logs/fprime-gds.stderr.log &
-        GDS_PID=$!
+        if [ "${GROUND_SYSTEM}" = "fprime-yamcs" ]; then
+          # fprime-yamcs manages the FSW binary itself; valgrind is not supported
+          fprime-yamcs --ip-client --logs gds-logs ${GDS_ARGS} \
+            > gds-logs/fprime-yamcs.stdout.log 2> gds-logs/fprime-yamcs.stderr.log &
+          GDS_PID=$!
+          FSW_PID=${GDS_PID}
 
-        # Start the FSW binary (optionally under valgrind)
-        if [ "${USE_VALGRIND}" = "true" ] && command -v valgrind > /dev/null 2>&1; then
-          echo "[INFO] Starting FSW binary under valgrind"
-          valgrind \
-            --tool=memcheck \
-            --error-exitcode=1 \
-            --leak-check=full \
-            --show-leak-kinds=all \
-            --track-origins=yes \
-            --log-file=gds-logs/valgrind.log \
-            ${BINARY_PATH} ${BINARY_ARGS} \
-            > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
+          echo "[INFO] Waiting ${STARTUP_DELAY}s for YAMCS and FSW to start"
+          sleep "${STARTUP_DELAY}"
+          if ! ps -p ${GDS_PID} > /dev/null 2>&1; then
+            echo "::error::fprime-yamcs failed to start. Logs:"
+            cat gds-logs/fprime-yamcs.stderr.log
+            exit 1
+          fi
+          READY=0
+          for i in {1..30}; do
+            python -c "from yamcs.client import YamcsClient; YamcsClient('127.0.0.1:8090')" 2>/dev/null && { READY=1; break; }
+            sleep 2
+          done
+          if [ ${READY} -ne 1 ]; then
+            echo "::error::YAMCS did not become ready before timeout"
+            exit 1
+          fi
+          echo "[INFO] YAMCS ready (PID ${GDS_PID})"
+          sleep 5
         else
-          echo "[INFO] Starting FSW binary"
-          ${BINARY_PATH} ${BINARY_ARGS} \
-            > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
-        fi
-        FSW_PID=$!
+          # Start GDS headless without the app (-n); we manage the binary separately
+          fprime-gds -n -g none -l gds-logs ${GDS_ARGS} \
+            > gds-logs/fprime-gds.stdout.log 2> gds-logs/fprime-gds.stderr.log &
+          GDS_PID=$!
 
-        echo "[INFO] Waiting ${STARTUP_DELAY}s for GDS and FSW to start"
-        sleep "${STARTUP_DELAY}"
+          # Start the FSW binary (optionally under valgrind)
+          if [ "${USE_VALGRIND}" = "true" ] && command -v valgrind > /dev/null 2>&1; then
+            echo "[INFO] Starting FSW binary under valgrind"
+            valgrind \
+              --tool=memcheck \
+              --error-exitcode=1 \
+              --leak-check=full \
+              --show-leak-kinds=all \
+              --track-origins=yes \
+              --log-file=gds-logs/valgrind.log \
+              ${BINARY_PATH} ${BINARY_ARGS} \
+              > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
+          else
+            echo "[INFO] Starting FSW binary"
+            ${BINARY_PATH} ${BINARY_ARGS} \
+              > gds-logs/fsw.stdout.log 2> gds-logs/fsw.stderr.log &
+          fi
+          FSW_PID=$!
 
-        if ! ps -p ${GDS_PID} > /dev/null 2>&1; then
-          echo "::error::GDS failed to start. Logs:"
-          cat gds-logs/fprime-gds.stderr.log
-          exit 1
+          echo "[INFO] Waiting ${STARTUP_DELAY}s for GDS and FSW to start"
+          sleep "${STARTUP_DELAY}"
+
+          if ! ps -p ${GDS_PID} > /dev/null 2>&1; then
+            echo "::error::GDS failed to start. Logs:"
+            cat gds-logs/fprime-gds.stderr.log
+            exit 1
+          fi
+          if ! ps -p ${FSW_PID} > /dev/null 2>&1; then
+            echo "::error::FSW binary failed to start. Logs:"
+            cat gds-logs/fsw.stderr.log
+            exit 1
+          fi
+          echo "[INFO] GDS (PID ${GDS_PID}) and FSW (PID ${FSW_PID}) running"
         fi
-        if ! ps -p ${FSW_PID} > /dev/null 2>&1; then
-          echo "::error::FSW binary failed to start. Logs:"
-          cat gds-logs/fsw.stderr.log
-          exit 1
-        fi
-        echo "[INFO] GDS (PID ${GDS_PID}) and FSW (PID ${FSW_PID}) running"
 
         # Run integration tests
         TIMEOUT_CMD="timeout"

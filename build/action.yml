@@ -36,7 +36,9 @@ runs:
         else
           VERBOSE_FLAG=
         fi
-        fprime-util generate ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM}
+        set -o pipefail
+        chmod +x "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"
+        fprime-util generate ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM} 2>&1 | "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"
     - name: "Build"
       working-directory: ${{ inputs.working-directory }}
       shell: bash
@@ -65,4 +67,6 @@ runs:
         else
           VERBOSE_FLAG=
         fi
-        fprime-util build ${ALL_FLAG} ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM}
+        set -o pipefail
+        chmod +x "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"
+        fprime-util build ${ALL_FLAG} ${JOBS_FLAG} ${VERBOSE_FLAG} ${TARGET_PLATFORM} 2>&1 | "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"

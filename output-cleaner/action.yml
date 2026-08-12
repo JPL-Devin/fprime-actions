@@ -1,0 +1,10 @@
+name: "F´ Output Cleaner Setup"
+description: "Add the output-cleaner log filter to the PATH for use in later steps"
+runs:
+  using: "composite"
+  steps:
+    - name: "Add output-cleaner to PATH"
+      shell: bash
+      run: |
+        chmod +x "${GITHUB_ACTION_PATH}/output-cleaner"
+        echo "${GITHUB_ACTION_PATH}" >> "${GITHUB_PATH}"

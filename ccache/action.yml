@@ -34,10 +34,23 @@ runs:
       echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> $GITHUB_ENV
       echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> $GITHUB_ENV
     shell: bash
-  # The exact key is unique per run so the post-job save always stores an
-  # updated cache; restore-keys falls back to the most recent cache for the
-  # same workflow/job. Caches saved on devel are readable from PR branches.
+  # GitHub scopes caches saved from a pull_request run to that PR's merge
+  # ref, so they are invisible to every other PR and only crowd out the
+  # repository's shared 10 GB cache quota.  PR runs therefore restore-only,
+  # falling back (via restore-keys) to the cache seeded from the default
+  # branch (nightly schedule / push / dispatch runs), which every PR can
+  # read.  Non-PR runs use the full cache action: its exact key is unique
+  # per run so the post-job save always stores an updated cache.
+  - name: "Cache compiler output (restore only)"
+    if: github.event_name == 'pull_request'
+    uses: actions/cache/restore@v4
+    with:
+      path: ~/.ccache
+      key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}${{ inputs.key-suffix }}-${{ github.run_id }}
+      restore-keys: |
+        ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}${{ inputs.key-suffix }}-
   - name: "Cache compiler output"
+    if: github.event_name != 'pull_request'
     uses: actions/cache@v4
     with:
       path: ~/.ccache

@@ -74,14 +74,9 @@ runs:
         }
         trap cleanup EXIT
 
-        # fprime-yamcs is a drop-in replacement for fprime-gds; only -g (GUI selection) is fprime-gds specific
-        GS_FLAGS=""
-        if [ "${GROUND_SYSTEM}" = "fprime-gds" ]; then
-          GS_FLAGS="-g none"
-        fi
-
-        # Start the ground system headless without the app (-n); we manage the binary separately
-        ${GROUND_SYSTEM} -n ${GS_FLAGS} -l gds-logs ${GDS_ARGS} \
+        # Start the ground system (a drop-in fprime-gds replacement) headless (-g none) without
+        # the app (-n); we manage the binary separately
+        ${GROUND_SYSTEM} -n -g none -l gds-logs ${GDS_ARGS} \
           > gds-logs/${GROUND_SYSTEM}.stdout.log 2> gds-logs/${GROUND_SYSTEM}.stderr.log &
         GDS_PID=$!
 

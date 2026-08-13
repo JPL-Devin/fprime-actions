@@ -18,39 +18,31 @@ mkdir -p "${INSTALL_DIR}"/{bin,dict,gds-logs,ComLoggerFiles,test}
 echo "# SOAK STARTED $(date +%Y-%m-%dT%H:%M:%S)" > "${INSTALL_DIR}/soak.log"
 
 case "${PLATFORM}" in
-  linux)
+  linux|linux-remote)
     echo "[INFO] Staging Linux artifacts"
     cp artifacts/build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
     cp artifacts/fprime-gds.yml "${INSTALL_DIR}/fprime-gds.yml" 2>/dev/null || true
     cp -r artifacts/int/. "${INSTALL_DIR}/test/"
     cp artifacts/build-artifacts/*/*/bin/* "${INSTALL_DIR}/bin/fsw"
     chmod +x "${INSTALL_DIR}/bin/fsw"
-    GDS_ARGS="${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
-    ;;
-  linux-remote)
-    echo "[INFO] Staging Linux artifacts"
-    cp artifacts/build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
-    cp artifacts/fprime-gds.yml "${INSTALL_DIR}/fprime-gds.yml" 2>/dev/null || true
-    cp -r artifacts/int/. "${INSTALL_DIR}/test/"
-    cp artifacts/build-artifacts/*/*/bin/* "${INSTALL_DIR}/bin/fsw"
-    chmod +x "${INSTALL_DIR}/bin/fsw"
-    GDS_ARGS="--communication-selection ip --ip-address ${FSW_IP} --ip-port ${FSW_PORT:-50000} --ip-client ${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
     ;;
   pico2)
     # fprime-ci archives ./build-artifacts (plus dictionary/executable/test-scripts
-    # by basename) into archive.tar.gz. 
+    # by basename) into archive.tar.gz.
     echo "[INFO] Staging Pico 2 artifacts from fprime-ci build"
     echo "[INFO] Extracting archive.tar.gz"
     tar -xzf ./archive.tar.gz
     cp ./build-artifacts/*/*/dict/*TopologyDictionary.json "${INSTALL_DIR}/dict/"
     cp -r ./*/*/test/int/. "${INSTALL_DIR}/test/" 2>/dev/null || true
-    GDS_ARGS="--communication-selection uart --uart-device ${FSW_DEVICE:-/dev/pico2} --uart-baud 115200 --uart-skip-port-check ${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
+    cp ./fprime-gds.yml "${INSTALL_DIR}/fprime-gds.yml" 2>/dev/null || true
     ;;
   *)
     echo "::error::Unknown platform: ${PLATFORM}"
     exit 1
     ;;
 esac
+
+GDS_ARGS="${ZMQ_TRANSPORT} ${GDS_ARGS:-}"
 
 DICT_PATH=$(ls "${INSTALL_DIR}/dict/"*TopologyDictionary.json | head -n 1)
 

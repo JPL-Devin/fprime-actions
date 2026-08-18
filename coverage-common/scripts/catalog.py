@@ -88,6 +88,7 @@ table a:hover { text-decoration: underline; }
 .badge-bronze   { background: #f5e0d1; color: #8a4412; border-color: #cd7f32; }
 .no-ut, .no-cov { color: #6e7781; font-style: italic; font-size: 0.85rem; }
 .section-title { margin: 1.25rem 0 0.5rem 0; font-size: 1.05rem; }
+.welcome { color: #1f2328; font-size: 0.95rem; margin-bottom: 1rem; max-width: 60rem; }
 """
 
 MODULE_CSS = """\
@@ -116,6 +117,20 @@ table tr:hover { background: #f6f8fa; }
 .badge-bronze   { background: #f5e0d1; color: #8a4412; border-color: #cd7f32; }
 .no-cov { color: #6e7781; font-style: italic; font-size: 0.85rem; }
 """
+
+WELCOME_HTML = (
+    "These pages grade every F\u00b4 module against the project's quality "
+    "criteria. Each module is scored per artifact \u2014 unit test coverage, "
+    "integration test coverage, static analysis findings, and the component "
+    "development checklist \u2014 on a tier scale of "
+    '<span class="badge badge-platinum">Platinum</span> (best), '
+    '<span class="badge badge-gold">Gold</span>, '
+    '<span class="badge badge-silver">Silver</span>, and '
+    '<span class="badge badge-bronze">Bronze</span>. '
+    "Click a module for its detail page, or a cell for the underlying "
+    "report. Pages are regenerated automatically from the latest published "
+    "CI results for the ref shown above."
+)
 
 TIER_LABELS = {
     "platinum": "Platinum",
@@ -366,8 +381,9 @@ def _checks_cell(entry: ModuleEntry) -> str:
         return '<span class="no-cov">&mdash;</span>'
     passed = int(summary.get("passed", 0) or 0)
     failed = int(summary.get("failed", 0) or 0)
+    skipped = int(summary.get("skipped", 0) or 0)
     tier = checks_tier(passed, failed)
-    label = f"{passed} pass" if failed == 0 else f"{failed} fail / {passed} pass"
+    label = f"{passed}/{passed + failed + skipped} - {skipped} skipped"
     return f'{badge_html(tier)} <a href="{html.escape(entry.checks_report)}">{label}</a>'
 
 
@@ -416,8 +432,8 @@ def _render_group(group: Group, thresholds: CoverageThresholds) -> str:
     return (
         f"<details{open_attr}><summary>{header}</summary>"
         f'<table><thead><tr><th>Module</th><th class="cell">UT Coverage</th>'
-        f'<th class="cell">INT Coverage</th><th class="cell">CodeQL</th>'
-        f'<th class="cell">Checks</th></tr></thead>'
+        f'<th class="cell">Int Coverage</th><th class="cell">CodeQL</th>'
+        f'<th class="cell">Checklist</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
         f"</details>"
     )
@@ -448,7 +464,7 @@ def render_module_index_html(
         entry.ut_summary, entry.has_coverage, f"{coverage_subdir}/index.html",
         thresholds, missing_note=missing_note,
     )
-    rows.append(f"<tr><td>UT Coverage</td><td>{ut_html}</td></tr>")
+    rows.append(f"<tr><td>Unit Test Coverage</td><td>{ut_html}</td></tr>")
 
     if entry.int_summary is not None:
         int_html = _coverage_cell(
@@ -457,7 +473,7 @@ def render_module_index_html(
         )
     else:
         int_html = '<span class="no-cov">no data</span>'
-    rows.append(f"<tr><td>INT Coverage</td><td>{int_html}</td></tr>")
+    rows.append(f"<tr><td>Integration Test Coverage</td><td>{int_html}</td></tr>")
 
     for subdir, summary in entry.codeql_checks.items():
         row_label = html.escape(check_labels.get(subdir, subdir))
@@ -478,14 +494,18 @@ def render_module_index_html(
     if entry.checks_summary is not None:
         passed = int(entry.checks_summary.get("passed", 0) or 0)
         failed = int(entry.checks_summary.get("failed", 0) or 0)
+        skipped = int(entry.checks_summary.get("skipped", 0) or 0)
         tier = checks_tier(passed, failed)
-        label = f"{passed} pass" if failed == 0 else f"{failed} fail / {passed} pass"
+        label = (
+            f"{passed} passed / {skipped} skipped / {failed} failed / "
+            f"{passed + failed + skipped} total"
+        )
         checks_html = (
             f'{badge_html(tier)} <a href="{html.escape(checks_subdir)}/index.html">{label}</a>'
         )
     else:
         checks_html = '<span class="no-cov">no data</span>'
-    rows.append(f"<tr><td>Checks</td><td>{checks_html}</td></tr>")
+    rows.append(f"<tr><td>Checklist</td><td>{checks_html}</td></tr>")
 
     depth = entry.path.count("/") + 1
     checklist_href = "../" * depth + "index.html"
@@ -530,7 +550,7 @@ def render_index_html(
         )
     else:
         parts.append('<strong>UT coverage:</strong> <span class="no-cov">no data</span>')
-    parts.append('<strong>INT coverage:</strong> <span class="no-cov">no data</span>')
+    parts.append('<strong>Int coverage:</strong> <span class="no-cov">no data</span>')
     for check_subdir, check_summary in overall_codeql_checks.items():
         name = html.escape(check_labels.get(check_subdir, check_subdir))
         if check_summary is not None:
@@ -555,6 +575,7 @@ def render_index_html(
         f"<h1>F\u00b4 Module Checklist</h1>"
         f'<div class="meta">{html.escape(ref_type)} <code>{html.escape(ref)}</code> '
         f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
+        f'<div class="welcome">{WELCOME_HTML}</div>'
         f'<div class="overall">{overall_html}</div>'
         f'<div class="section-title">Modules</div>'
         f"{group_html}"

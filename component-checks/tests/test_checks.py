@@ -496,14 +496,14 @@ def test_run_checks_and_catalog() -> None:
         )
         check("catalog: exit 0", code == 0)
         index = (dest / "index.html").read_text()
-        check("catalog: Checks column", "<th class=\"cell\">Checks</th>" in index)
+        check("catalog: Checklist column", "<th class=\"cell\">Checklist</th>" in index)
         check("catalog: checks link", "Svc/Widget/checks/index.html" in index)
         cat = json.loads((dest / "catalog.json").read_text())
         entry = cat["modules"][0]
         check("catalog: checks entry", entry["checks"] is not None)
         check("catalog: checks tier", entry["tiers"]["checks"] == "bronze", entry["tiers"]["checks"])
         module_page = (dest / "Svc" / "Widget" / "index.html").read_text()
-        check("catalog: module page Checks row", "<td>Checks</td>" in module_page)
+        check("catalog: module page Checklist row", "<td>Checklist</td>" in module_page)
 
 
 def main() -> int:

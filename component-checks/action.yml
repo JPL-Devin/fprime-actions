@@ -3,9 +3,10 @@ description: >
   Run the static component checklist checks (requirements traceability,
   design, implementation, and unit-test source checks) for every discovered
   module, publish per-module results onto the per-base-branch baseline
-  branch (coverage/<ref-name>), and regenerate the checklist landing page
-  so each module row gains a "Checks" badge next to its coverage and CodeQL
-  badges.  Results from build-level checks (D6, I2, I4, U1, U4, U5, C1) run
+  branch (coverage/<ref-name>), grade each module's Software Description
+  Document (docs/sdd.md), and regenerate the checklist landing page so each
+  module row gains "Checklist" and "Software Description Document" badges
+  next to its coverage and CodeQL badges.  Results from build-level checks (D6, I2, I4, U1, U4, U5, C1) run
   in earlier steps can be merged in via extra-results.  Intended to run on
   push events with permissions: { contents: write }.  Skipped on fork
   pushes.
@@ -22,6 +23,10 @@ inputs:
     description: "Subdirectory under each module in the baseline branch holding check results"
     required: false
     default: "checks"
+  sdd-subdirectory:
+    description: "Subdirectory under each module in the baseline branch holding SDD grade artifacts"
+    required: false
+    default: "sdd"
   extra-results:
     description: >
       Newline-separated list of JSON-Lines result files from build-level
@@ -72,6 +77,7 @@ runs:
         REF_NAME: ${{ steps.ref.outputs.ref-name }}
         REF_TYPE: ${{ steps.ref.outputs.ref-type }}
         CHECKS_SUBDIR: ${{ inputs.checks-subdirectory }}
+        SDD_SUBDIR: ${{ inputs.sdd-subdirectory }}
         EXTRA_RESULTS: ${{ inputs.extra-results }}
         COMMIT_SHA: ${{ github.sha }}
         CONFIG_FILE: ${{ inputs.config-file }}
@@ -112,10 +118,19 @@ runs:
             "${EXTRA_ARGS[@]}" \
             --ref "$REF_NAME" \
             --commit "$COMMIT_SHA" \
+          && python3 "${CHECKS_PATH}/scripts/check_sdd.py" \
+            --root "$REPO_ROOT" \
+            --dest "$BASELINE_DIR" \
+            --modules-jsonl "$MODULES_JSONL" \
+            --sdd-subdirectory "$SDD_SUBDIR" \
+            --config "$CONFIG_ABS" \
+            --ref "$REF_NAME" \
+            --commit "$COMMIT_SHA" \
           && python3 "${COMMON_PATH}/scripts/catalog.py" \
             --dest "$BASELINE_DIR" \
             --modules-jsonl "$MODULES_JSONL" \
             --checks-subdirectory "$CHECKS_SUBDIR" \
+            --sdd-subdirectory "$SDD_SUBDIR" \
             --ref "$REF_NAME" \
             --ref-type "$REF_TYPE" \
             --commit "$COMMIT_SHA" \

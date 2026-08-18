@@ -46,6 +46,7 @@ import check_req_parent_trace  # noqa: E402
 import check_req_ports  # noqa: E402
 import check_req_telemetry  # noqa: E402
 import check_req_verification  # noqa: E402
+import check_sdd  # noqa: E402
 import check_sm_actions  # noqa: E402
 import check_static_analysis  # noqa: E402
 import check_topology_build  # noqa: E402
@@ -386,6 +387,63 @@ def test_checks_tier() -> None:
     check("tier: none", checks_tier(0, 0) == "bronze")
 
 
+_SDD_INTRO = "The component manages widget processing with start and stop commands plus telemetry reporting for operators."
+_SDD_PROSE = (
+    "This section describes the behavior in detail including the handling of "
+    "nominal and off nominal cases plus resource usage and timing constraints."
+)
+
+
+def _sdd_doc(sections: int, tables: str = "") -> str:
+    parts = ["# Svc::Widget Component", "## 1. Introduction", _SDD_INTRO]
+    for i in range(2, sections + 2):
+        parts += [f"## {i}. Section {i}", _SDD_PROSE, _SDD_PROSE]
+    if tables:
+        parts += ["## Interfaces", tables]
+    return "\n\n".join(parts) + "\n"
+
+
+def test_sdd_grading() -> None:
+    th = check_sdd.SddThresholds()
+
+    check("sdd: missing is bronze", check_sdd.grade_sdd(None, th) == {"tier": "bronze", "has_sdd": False})
+
+    headings_only = "# Title\n\n## 1. Introduction\n\n## 2. Design\n"
+    check("sdd: headings-only is bronze", check_sdd.grade_sdd(headings_only, th)["tier"] == "bronze")
+
+    placeholders = _sdd_doc(4).replace(_SDD_PROSE, "TBD " + _SDD_PROSE)
+    graded = check_sdd.grade_sdd(placeholders, th)
+    check("sdd: placeholder sections are bronze", graded["tier"] == "bronze", graded["tier"])
+    check("sdd: placeholder hits counted", graded["placeholder_hits"] == 8, str(graded))
+
+    graded = check_sdd.grade_sdd(_sdd_doc(1), th)
+    check("sdd: silver", graded["tier"] == "silver", str(graded))
+
+    graded = check_sdd.grade_sdd(_sdd_doc(4), th)
+    check("sdd: gold", graded["tier"] == "gold", str(graded))
+
+    port_table = "| Port | Kind |\n| --- | --- |\n| dataIn | sync input |\n"
+    graded = check_sdd.grade_sdd(_sdd_doc(4, port_table), th)
+    check("sdd: platinum without model", graded["tier"] == "platinum", str(graded))
+    check("sdd: table kinds detected", graded["table_kinds"] == ["ports"], str(graded))
+
+    model = _fpp.load_module_model(WIDGET)
+    graded = check_sdd.grade_sdd(_sdd_doc(4, port_table), th, model)
+    check("sdd: gold when tables miss declared kinds", graded["tier"] == "gold", str(graded))
+
+    all_tables = "\n".join(
+        f"| {kw[0].capitalize()} | Description |\n| --- | --- |\n| x | y |\n"
+        for kw in check_sdd.TABLE_KEYWORDS.values()
+    )
+    graded = check_sdd.grade_sdd(_sdd_doc(4, all_tables), th, model)
+    check("sdd: platinum with model coverage", graded["tier"] == "platinum", str(graded))
+
+    strict = check_sdd.sdd_thresholds({"sdd": {"gold_sections": 6}})
+    check("sdd: config override", strict.gold_sections == 6 and strict.gold_words == 150)
+    graded = check_sdd.grade_sdd(_sdd_doc(4), strict)
+    check("sdd: override demotes gold to silver", graded["tier"] == "silver", str(graded))
+
+
 def test_run_checks_and_catalog() -> None:
     import catalog
 
@@ -484,6 +542,34 @@ def test_run_checks_and_catalog() -> None:
         )
         check("run_checks: --gate exits 1", code == 1)
 
+        # SDD grades published: Widget has an SDD, Empty does not
+        (root / "Svc" / "Empty").mkdir(parents=True)
+        sdd_modules_jsonl = Path(tmp) / "sdd-modules.jsonl"
+        sdd_modules_jsonl.write_text(
+            json.dumps({"path": "Svc/Widget", "has_ut": True}) + "\n"
+            + json.dumps({"path": "Svc/Empty", "has_ut": False}) + "\n"
+        )
+        code, _ = run(
+            check_sdd.main,
+            [
+                "--root", str(root),
+                "--dest", str(dest),
+                "--modules-jsonl", str(sdd_modules_jsonl),
+                "--ref", "devel",
+                "--commit", "abc1234def",
+            ],
+        )
+        check("check_sdd: exit 0", code == 0)
+        sdd_summary = json.loads((dest / "Svc" / "Widget" / "sdd" / "summary.json").read_text())
+        check("check_sdd: widget summary", sdd_summary["has_sdd"] and sdd_summary["tier"] in ("bronze", "silver"))
+        check("check_sdd: sdd.md copied", (dest / "Svc" / "Widget" / "sdd" / "sdd.md").is_file())
+        empty_summary = json.loads((dest / "Svc" / "Empty" / "sdd" / "summary.json").read_text())
+        check(
+            "check_sdd: missing SDD is bronze",
+            empty_summary["tier"] == "bronze" and empty_summary["has_sdd"] is False,
+        )
+        check("check_sdd: no sdd.md when missing", not (dest / "Svc" / "Empty" / "sdd" / "sdd.md").exists())
+
         # Catalog picks up the checks summary
         code, _ = run(
             catalog.main,
@@ -502,8 +588,16 @@ def test_run_checks_and_catalog() -> None:
         entry = cat["modules"][0]
         check("catalog: checks entry", entry["checks"] is not None)
         check("catalog: checks tier", entry["tiers"]["checks"] == "bronze", entry["tiers"]["checks"])
+        check("catalog: sdd entry", entry["sdd"] is not None and entry["sdd"]["has_sdd"])
+        check("catalog: sdd tier", entry["tiers"]["sdd"] == sdd_summary["tier"], entry["tiers"]["sdd"])
+        check("catalog: overall includes sdd", entry["tiers"]["overall"] == "bronze")
         module_page = (dest / "Svc" / "Widget" / "index.html").read_text()
         check("catalog: module page Checklist row", "<td>Checklist</td>" in module_page)
+        check(
+            "catalog: module page SDD row",
+            "<td>Software Description Document</td>" in module_page
+            and "sdd/index.html" in module_page,
+        )
 
 
 def main() -> int:
@@ -517,6 +611,7 @@ def main() -> int:
         test_unit_testing_checks,
         test_build_level_checks_offline,
         test_checks_tier,
+        test_sdd_grading,
         test_run_checks_and_catalog,
     ]
     for test in tests:

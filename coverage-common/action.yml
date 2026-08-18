@@ -105,10 +105,13 @@ runs:
         # regressions.
         BASE_CMD="check --all --coverage"
         ROOT_FLAG=""
+        CACHE_FLAG=""
         EXTRA_FILTER=""
         if [ "${MODE}" = "coverage" ]; then
-          # gcovr-only: reuse coverage data already on disk, no test run
-          BASE_CMD="coverage --all"
+          # --existing: reuse coverage data already on disk, no test run
+          BASE_CMD="check --all --coverage --existing"
+          # The deployment's normal (non-ut) build cache holds the data
+          CACHE_FLAG="--build-cache ${PROJECT_ROOT}/build-fprime-automatic-${TARGET_PLATFORM:-native}"
           # The global gcovr filter is the deployment project's root; also
           # include this working tree so framework modules are reported.
           EXTRA_FILTER="--filter $(pwd)"
@@ -116,7 +119,7 @@ runs:
         if [ -n "${PROJECT_ROOT}" ]; then
           ROOT_FLAG="-r ${PROJECT_ROOT}"
         fi
-        fprime-util ${BASE_CMD} ${JOBS_FLAG} ${TARGET_PLATFORM} ${ROOT_FLAG} \
+        fprime-util ${BASE_CMD} ${JOBS_FLAG} ${TARGET_PLATFORM} ${ROOT_FLAG} ${CACHE_FLAG} \
           --pass-through --json-summary coverage/summary.json \
           --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
           ${EXTRA_FILTER} ${VERBOSE_FLAG}
@@ -141,11 +144,16 @@ runs:
         if [ "${DEBUG}" = "true" ]; then
           DEBUG_FLAG="--debug"
         fi
+        BUILD_CACHE=""
+        if [ "${MODE}" = "coverage" ]; then
+          BUILD_CACHE="${PROJECT_ROOT}/build-fprime-automatic-${TARGET_PLATFORM:-native}"
+        fi
         python3 "${ACTION_PATH}/scripts/run_coverage.py" \
           --root . \
           --modules-jsonl "$MODULES_JSONL" \
           --target-platform "${TARGET_PLATFORM}" \
           --mode "${MODE}" \
           --project-root "${PROJECT_ROOT}" \
+          --build-cache "${BUILD_CACHE}" \
           ${STRICT_FLAG} \
           ${DEBUG_FLAG}

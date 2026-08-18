@@ -43,7 +43,7 @@ from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
 from _tiers import SEVERITY_ORDER, TIERS, CoverageThresholds, checks_tier, codeql_tier, coverage_tier
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 CSS = """\
 * { box-sizing: border-box; }
@@ -158,6 +158,19 @@ def load_codeql_summary(path: Path) -> Optional[dict]:
     return doc
 
 
+def load_sdd_summary(path: Path) -> Optional[dict]:
+    """Load an SDD summary.json, returning None on failure."""
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict) or doc.get("artifact") != "sdd" or doc.get("tier") not in TIERS:
+        return None
+    return doc
+
+
 def load_checks_summary(path: Path) -> Optional[dict]:
     """Load a checklist-checks summary.json, returning None on failure."""
     if not path.is_file():
@@ -244,6 +257,8 @@ class ModuleEntry:
     codeql_report: str  # primary (first) check's findings page
     checks_summary: Optional[dict] = None
     checks_report: str = ""
+    sdd_summary: Optional[dict] = None
+    sdd_report: str = ""
     module_report: Optional[str] = None  # roll-up page, when one is written
 
     @property
@@ -266,8 +281,8 @@ class ModuleEntry:
     def rollup_tier(self, thresholds: CoverageThresholds) -> str:
         """Worst (minimum) tier across every artifact with published data.
 
-        Artifacts without data are excluded; bronze when nothing is
-        published at all.
+        Artifacts without data are excluded, except the SDD, which always
+        participates: a missing SDD counts as bronze.
         """
         tiers: list[str] = []
         if self.ut_summary is not None:
@@ -282,9 +297,15 @@ class ModuleEntry:
                 int(self.checks_summary.get("passed", 0) or 0),
                 int(self.checks_summary.get("failed", 0) or 0),
             ))
-        if not tiers:
-            return "bronze"
+        tiers.append(self.sdd_tier)
         return TIERS[max(TIERS.index(t) for t in tiers)]
+
+    @property
+    def sdd_tier(self) -> str:
+        """SDD tier; bronze when no SDD grade has been published."""
+        if self.sdd_summary is None:
+            return "bronze"
+        return self.sdd_summary["tier"]
 
 
 @dataclass
@@ -475,6 +496,7 @@ def render_module_index_html(
     coverage_subdir: str,
     int_subdir: str,
     checks_subdir: str,
+    sdd_subdir: str,
     check_labels: dict,
 ) -> str:
     """Render a module's roll-up page linking its published artifact subtrees.
@@ -486,8 +508,9 @@ def render_module_index_html(
     welcome = (
         f"This page summarizes the quality grades for the "
         f"<code>{html.escape(entry.path)}</code> module of F\u00b4: test "
-        "coverage, static analysis findings, and component development "
-        "checklist results, each graded on a Platinum/Gold/Silver/Bronze "
+        "coverage, static analysis findings, component development "
+        "checklist results, and the software description document, each "
+        "graded on a Platinum/Gold/Silver/Bronze "
         "tier scale. The overall badge above is the minimum tier across all "
         "graded artifacts. Follow a row's link for the underlying report."
     )
@@ -541,6 +564,16 @@ def render_module_index_html(
     else:
         checks_html = '<span class="no-cov">no data</span>'
     rows.append(f"<tr><td>Checklist</td><td>{checks_html}</td></tr>")
+
+    if entry.sdd_summary is not None:
+        label = "view" if entry.sdd_summary.get("has_sdd") else "missing"
+        sdd_html = (
+            f'{badge_html(entry.sdd_tier)} '
+            f'<a href="{html.escape(sdd_subdir)}/index.html">{label}</a>'
+        )
+    else:
+        sdd_html = f'{badge_html("bronze")} <span class="no-cov">no data</span>'
+    rows.append(f"<tr><td>Software Description Document</td><td>{sdd_html}</td></tr>")
 
     depth = entry.path.count("/") + 1
     checklist_href = "../" * depth + "index.html"
@@ -661,6 +694,13 @@ def build_catalog(
                 "tier": checks_tier(passed, failed),
                 "report": m.checks_report,
             }
+        sdd_entry = None
+        if m.sdd_summary is not None:
+            sdd_entry = {
+                "tier": m.sdd_tier,
+                "has_sdd": bool(m.sdd_summary.get("has_sdd")),
+                "report": m.sdd_report,
+            }
         codeql_checks_entry = {}
         for check_subdir, check_summary in m.codeql_checks.items():
             if check_summary is None:
@@ -680,6 +720,7 @@ def build_catalog(
                 "codeql": codeql_entry,
                 "codeql_checks": codeql_checks_entry,
                 "checks": checks_entry,
+                "sdd": sdd_entry,
                 "tiers": {
                     "overall": m.rollup_tier(thresholds),
                     "ut": coverage_tier(
@@ -698,6 +739,8 @@ def build_catalog(
                     "checks": (
                         checks_entry["tier"] if checks_entry is not None else None
                     ),
+                    # SDD always participates; missing SDD grades as bronze.
+                    "sdd": m.sdd_tier,
                 },
             }
         )
@@ -780,6 +823,12 @@ def main(argv=None) -> int:
         help="Subdirectory under each module holding checklist-check results "
         '(default: "checks")',
     )
+    parser.add_argument(
+        "--sdd-subdirectory",
+        default="sdd",
+        help="Subdirectory under each module holding the SDD grade artifacts "
+        '(default: "sdd")',
+    )
     parser.add_argument("--ref", required=True, help="Source ref name (branch or tag)")
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
     parser.add_argument("--commit", required=True, help="Source commit SHA")
@@ -805,6 +854,7 @@ def main(argv=None) -> int:
     int_subdir = args.int_coverage_subdirectory or "int-coverage"
     codeql_subdir = args.codeql_subdirectory or "codeql"
     checks_subdir = args.checks_subdirectory or "checks"
+    sdd_subdir = args.sdd_subdirectory or "sdd"
     thresholds = coverage_thresholds(load_config(args.config))
 
     generated_at = args.generated_at or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -820,7 +870,7 @@ def main(argv=None) -> int:
         dest,
         [rec["path"] for rec in records],
         default_subdir=codeql_subdir,
-        coverage_subdirs=(subdir, int_subdir, checks_subdir),
+        coverage_subdirs=(subdir, int_subdir, checks_subdir, sdd_subdir),
     )
 
     entries: list[ModuleEntry] = []
@@ -847,6 +897,8 @@ def main(argv=None) -> int:
                 codeql_report=f"{path}/{check_subdirs[0]}/index.html",
                 checks_summary=load_checks_summary(mod_dir / checks_subdir / "summary.json"),
                 checks_report=f"{path}/{checks_subdir}/index.html",
+                sdd_summary=load_sdd_summary(mod_dir / sdd_subdir / "summary.json"),
+                sdd_report=f"{path}/{sdd_subdir}/index.html",
                 module_report=f"{path}/index.html" if subdir else None,
             )
         )
@@ -880,6 +932,7 @@ def main(argv=None) -> int:
                     coverage_subdir=subdir,
                     int_subdir=int_subdir,
                     checks_subdir=checks_subdir,
+                    sdd_subdir=sdd_subdir,
                     check_labels=check_labels,
                 ),
                 encoding="utf-8",

@@ -7,7 +7,8 @@ Reads the modules.jsonl produced by discover.py.  In the default
 ``--mode coverage`` it runs ``fprime-util coverage`` in every module
 directory, splitting coverage data already on disk (e.g. from a system
 integration-test run) per module without re-running any tests; use
-``--build-cache`` to point at the instrumented build.  After each
+``--project-root`` to point at the deployment project owning the
+instrumented build cache.  After each
 successful run, renames ``coverage/coverage.html`` to
 ``coverage/index.html`` when present.
 
@@ -32,15 +33,15 @@ from pathlib import Path
 
 def _run_module(
     mod: str, root: Path, target_platform: str, debug: bool,
-    mode: str = "check", build_cache: str = "",
+    mode: str = "check", project_root: str = "",
 ) -> bool:
     """Run coverage for a single module.  Returns True on success."""
     mod_dir = root / mod
     cmd = ["fprime-util", "check", "--coverage"] if mode == "check" else ["fprime-util", "coverage"]
     if target_platform:
         cmd.append(target_platform)
-    if build_cache:
-        cmd.extend(["--build-cache", build_cache])
+    if project_root:
+        cmd.extend(["-r", project_root])
     cmd.extend([
         "--pass-through",
         "--json-summary", "coverage/summary.json",
@@ -75,8 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("check", "coverage"), default="check",
                         help="'check' runs unit tests then gcovr; 'coverage' runs gcovr "
                         "only, from coverage data already on disk (all modules)")
-    parser.add_argument("--build-cache", default="",
-                        help="Explicit build cache forwarded to fprime-util (coverage mode)")
+    parser.add_argument("--project-root", default="",
+                        help="Deployment project root forwarded to fprime-util -r (coverage mode)")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero if any module failed (default: lenient, exit 0)")
     parser.add_argument("--debug", action="store_true",
@@ -100,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             skipped += 1
             continue
         if not _run_module(mod, root, args.target_platform, args.debug,
-                           mode=args.mode, build_cache=args.build_cache):
+                           mode=args.mode, project_root=args.project_root):
             failed += 1
         else:
             covered += 1

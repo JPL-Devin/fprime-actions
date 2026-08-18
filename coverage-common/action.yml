@@ -40,10 +40,11 @@ inputs:
       re-running any tests.
     required: false
     default: "check"
-  build-cache:
+  project-root:
     description: >
-      Explicit build cache passed to fprime-util (--build-cache) in
-      'coverage' mode, e.g. the instrumented deployment's build directory.
+      CMake project root passed to fprime-util (-r) in 'coverage' mode:
+      the deployment project that owns the instrumented build cache
+      (e.g. the Ref deployment's project directory).
     required: false
     default: ""
   include-autocoder-modules:
@@ -84,7 +85,7 @@ runs:
         JOBS_INPUT: ${{ inputs.jobs }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODE: ${{ inputs.mode }}
-        BUILD_CACHE: ${{ inputs.build-cache }}
+        PROJECT_ROOT: ${{ inputs.project-root }}
         DEBUG: ${{ inputs.debug }}
       run: |
         JOBS_FLAG=""
@@ -103,18 +104,22 @@ runs:
         # never fire, but it's cheap insurance against future toolchain
         # regressions.
         BASE_CMD="check --all --coverage"
-        BUILD_CACHE_FLAG=""
+        ROOT_FLAG=""
+        EXTRA_FILTER=""
         if [ "${MODE}" = "coverage" ]; then
           # gcovr-only: reuse coverage data already on disk, no test run
           BASE_CMD="coverage --all"
+          # The global gcovr filter is the deployment project's root; also
+          # include this working tree so framework modules are reported.
+          EXTRA_FILTER="--filter $(pwd)"
         fi
-        if [ -n "${BUILD_CACHE}" ]; then
-          BUILD_CACHE_FLAG="--build-cache ${BUILD_CACHE}"
+        if [ -n "${PROJECT_ROOT}" ]; then
+          ROOT_FLAG="-r ${PROJECT_ROOT}"
         fi
-        fprime-util ${BASE_CMD} ${JOBS_FLAG} ${TARGET_PLATFORM} ${BUILD_CACHE_FLAG} \
+        fprime-util ${BASE_CMD} ${JOBS_FLAG} ${TARGET_PLATFORM} ${ROOT_FLAG} \
           --pass-through --json-summary coverage/summary.json \
           --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
-          ${VERBOSE_FLAG}
+          ${EXTRA_FILTER} ${VERBOSE_FLAG}
 
     - name: "Per-module coverage"
       working-directory: ${{ inputs.working-directory }}
@@ -124,7 +129,7 @@ runs:
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
         MODE: ${{ inputs.mode }}
-        BUILD_CACHE: ${{ inputs.build-cache }}
+        PROJECT_ROOT: ${{ inputs.project-root }}
         STRICT: ${{ inputs.strict }}
         DEBUG: ${{ inputs.debug }}
       run: |
@@ -141,6 +146,6 @@ runs:
           --modules-jsonl "$MODULES_JSONL" \
           --target-platform "${TARGET_PLATFORM}" \
           --mode "${MODE}" \
-          --build-cache "${BUILD_CACHE}" \
+          --project-root "${PROJECT_ROOT}" \
           ${STRICT_FLAG} \
           ${DEBUG_FLAG}

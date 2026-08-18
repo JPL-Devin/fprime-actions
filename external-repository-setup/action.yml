@@ -41,6 +41,7 @@ runs:
       with:
         submodules: recursive
         path: ${{ inputs.overlay_location != '' && inputs.overlay_location || inputs.fprime_location }}
+        ref: ${{ github.ref }}
         fetch-tags: true
         persist-credentials: false
     # Cache pip's download/wheel cache so requirement installs avoid

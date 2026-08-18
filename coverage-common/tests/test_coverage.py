@@ -376,7 +376,7 @@ def test_catalog_groups_and_rollup():
         assert rc == 0
 
         cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
-        assert cat_doc["schema"] == 4
+        assert cat_doc["schema"] == 5
         assert cat_doc["ref"] == "devel"
         assert cat_doc["commit"] == "deadbeefcafe1234"
         assert cat_doc["thresholds"] == {"platinum": 95.0, "gold": 90.0, "silver": 80.0}
@@ -385,6 +385,8 @@ def test_catalog_groups_and_rollup():
         assert by_path["Drv/LinuxGpio"]["has_coverage"] is False
         assert by_path["Drv/LinuxGpio"]["has_ut"] is False
         assert by_path["Drv/LinuxGpio"]["tiers"]["ut"] == "bronze"  # no coverage is bronze
+        assert by_path["Drv/LinuxGpio"]["tiers"]["overall"] == "bronze"
+        assert by_path["Svc/CmdDispatcher"]["tiers"]["overall"] == "platinum"
         assert by_path["Svc/CmdDispatcher"]["ut"]["line_pct"] == 98.0
         assert by_path["Svc/CmdDispatcher"]["ut"]["function_pct"] == 93.33
         assert by_path["Svc/CmdDispatcher"]["tiers"]["ut"] == "platinum"
@@ -416,6 +418,8 @@ def test_catalog_groups_and_rollup():
         assert 'href="coverage/index.html"' in mod_page
         assert "badge-platinum" in mod_page
         assert ">Unit Test Coverage</td>" in mod_page
+        assert '<span class="badge badge-platinum">Platinum</span></h1>' in mod_page
+        assert 'class="welcome"' in mod_page
         assert ">Integration Test Coverage</td>" in mod_page
         assert ">CodeQL</td>" in mod_page
         assert "no data" in mod_page  # codeql not published yet

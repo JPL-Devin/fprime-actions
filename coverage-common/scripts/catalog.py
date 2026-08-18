@@ -43,7 +43,7 @@ from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
 from _tiers import SEVERITY_ORDER, TIERS, CoverageThresholds, checks_tier, codeql_tier, coverage_tier
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 CSS = """\
 * { box-sizing: border-box; }
@@ -116,6 +116,7 @@ table tr:hover { background: #f6f8fa; }
 .badge-silver   { background: #f0f0f0; color: #57606a; border-color: #c0c0c0; }
 .badge-bronze   { background: #f5e0d1; color: #8a4412; border-color: #cd7f32; }
 .no-cov { color: #6e7781; font-style: italic; font-size: 0.85rem; }
+.welcome { color: #1f2328; font-size: 0.95rem; margin-bottom: 1rem; max-width: 60rem; }
 """
 
 WELCOME_HTML = (
@@ -261,6 +262,29 @@ class ModuleEntry:
     def codeql_summary(self) -> Optional[dict]:
         """Aggregated roll-up across every published codeql check."""
         return aggregate_codeql(self.codeql_checks.values())
+
+    def rollup_tier(self, thresholds: CoverageThresholds) -> str:
+        """Worst (minimum) tier across every artifact with published data.
+
+        Artifacts without data are excluded; bronze when nothing is
+        published at all.
+        """
+        tiers: list[str] = []
+        if self.ut_summary is not None:
+            tiers.append(coverage_tier(self.ut_summary.line.percent, self.has_coverage, thresholds))
+        if self.int_summary is not None:
+            tiers.append(coverage_tier(self.int_summary.line.percent, self.has_int_coverage, thresholds))
+        agg = self.codeql_summary
+        if agg is not None:
+            tiers.append(codeql_tier(agg.get("worst")))
+        if self.checks_summary is not None:
+            tiers.append(checks_tier(
+                int(self.checks_summary.get("passed", 0) or 0),
+                int(self.checks_summary.get("failed", 0) or 0),
+            ))
+        if not tiers:
+            return "bronze"
+        return TIERS[max(TIERS.index(t) for t in tiers)]
 
 
 @dataclass
@@ -421,7 +445,8 @@ def _render_group(group: Group, thresholds: CoverageThresholds) -> str:
         )
         rows.append(
             f'<tr class="row">'
-            f'<td><a href="{html.escape(mod.module_report or mod.ut_report)}">{path_esc}</a></td>'
+            f'<td><a href="{html.escape(mod.module_report or mod.ut_report)}">{path_esc}</a> '
+            f'{badge_html(mod.rollup_tier(thresholds))}</td>'
             f'<td class="cell">{ut_html}</td>'
             f'<td class="cell">{_int_cell(mod, thresholds)}</td>'
             f'<td class="cell">{_codeql_cell(mod)}</td>'
@@ -457,6 +482,16 @@ def render_module_index_html(
     Links are relative to the module directory itself, so the page works
     wherever the baseline branch is hosted.
     """
+    rollup = entry.rollup_tier(thresholds)
+    welcome = (
+        f"This page summarizes the quality grades for the "
+        f"<code>{html.escape(entry.path)}</code> module of F\u00b4: test "
+        "coverage, static analysis findings, and component development "
+        "checklist results, each graded on a Platinum/Gold/Silver/Bronze "
+        "tier scale. The overall badge above is the minimum tier across all "
+        "graded artifacts. Follow a row's link for the underlying report."
+    )
+
     rows: list[str] = []
 
     missing_note = "no UT" if not entry.has_ut else "no coverage"
@@ -514,10 +549,11 @@ def render_module_index_html(
         '<html lang="en"><head><meta charset="utf-8">'
         f"<title>{html.escape(entry.path)} \u2014 {html.escape(ref)}</title>"
         f"<style>{MODULE_CSS}</style></head><body>"
-        f"<h1><code>{html.escape(entry.path)}</code></h1>"
+        f"<h1><code>{html.escape(entry.path)}</code> {badge_html(rollup)}</h1>"
         f'<div class="meta"><a href="{checklist_href}">\u2190 checklist</a> &middot; '
         f"{html.escape(ref_type)} <code>{html.escape(ref)}</code> "
         f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
+        f'<div class="welcome">{welcome}</div>'
         "<table><thead><tr><th>Artifact</th><th>Status</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
         "</body></html>\n"
@@ -645,6 +681,7 @@ def build_catalog(
                 "codeql_checks": codeql_checks_entry,
                 "checks": checks_entry,
                 "tiers": {
+                    "overall": m.rollup_tier(thresholds),
                     "ut": coverage_tier(
                         m.ut_summary.line.percent if m.has_coverage else 0.0,
                         m.has_coverage,

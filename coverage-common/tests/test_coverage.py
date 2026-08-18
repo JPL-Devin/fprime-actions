@@ -977,6 +977,92 @@ def test_compare_baseline_missing_reports_no_baseline():
 
 
 # ---------------------------------------------------------------------------
+def test_mirror_int_artifact_lands_in_int_coverage():
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "src"
+        dest = Path(tmp) / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        _place_coverage(_make_module(source, "Svc/Health"), "summary_mid.json")
+        _make_module(source, "Drv/LinuxGpio", with_ut=False)
+        (source / "coverage").mkdir(exist_ok=True)
+        shutil.copy2(FIXTURES / "summary_high.json", source / "coverage" / "summary.json")
+
+        # Pre-existing UT artifacts on the baseline branch must survive.
+        ut_dir = dest / "Svc/Health" / "coverage"
+        ut_dir.mkdir(parents=True)
+        (ut_dir / "summary.json").write_text(
+            (FIXTURES / "summary_high.json").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+        records = [
+            {"path": "Svc/Health", "has_ut": True},
+            {"path": "Drv/LinuxGpio", "has_ut": False},
+        ]
+        modules_jsonl = _modules_jsonl(records)
+
+        rc = mirror.main([
+            "--source", str(source),
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--artifact", "int",
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+        ])
+        assert rc == 0
+
+        # Int artifacts land under int-coverage/ at module and root level.
+        assert (dest / "Svc/Health" / "int-coverage" / "summary.json").is_file()
+        assert (dest / "Svc/Health" / "int-coverage" / "index.html").is_file()
+        assert (dest / "int-coverage" / "summary.json").is_file()
+        # Unexercised module gets an int-specific placeholder.
+        gpio = (dest / "Drv/LinuxGpio" / "int-coverage" / "index.html").read_text(encoding="utf-8")
+        assert "integration-test" in gpio
+        # UT artifacts were left untouched.
+        assert (dest / "Svc/Health" / "coverage" / "summary.json").is_file()
+
+        cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
+        assert cat_doc["overall_int"]["line_pct"] == 98.0
+        assert cat_doc["overall_int"]["report"] == "int-coverage/coverage-all.html"
+        by_path = {m["path"]: m for m in cat_doc["modules"]}
+        assert by_path["Svc/Health"]["int"]["report"] == "Svc/Health/int-coverage/index.html"
+        assert by_path["Svc/Health"]["tiers"]["int"] is not None
+
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert '<strong>Int coverage:</strong> <span class="no-cov">no data</span>' not in index_html
+        assert 'href="int-coverage/coverage-all.html"' in index_html
+
+        # Module page links its filtered report and the full-system record.
+        mod_page = (dest / "Svc/Health" / "index.html").read_text(encoding="utf-8")
+        assert 'href="int-coverage/index.html"' in mod_page
+        assert "full-system report" in mod_page
+        assert "../../int-coverage/coverage-all.html#:~:text=Svc/Health" in mod_page
+
+
+def test_catalog_without_int_data_keeps_no_data_cell():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "dest"
+        dest.mkdir()
+        records = [{"path": "Svc/Health", "has_ut": True}]
+        modules_jsonl = _modules_jsonl(records)
+
+        rc = catalog.main([
+            "--dest", str(dest),
+            "--modules-jsonl", str(modules_jsonl),
+            "--ref", "devel",
+            "--commit", "deadbeefcafe1234",
+        ])
+        assert rc == 0
+
+        cat_doc = json.loads((dest / "catalog.json").read_text(encoding="utf-8"))
+        assert cat_doc["overall_int"] is None
+        index_html = (dest / "index.html").read_text(encoding="utf-8")
+        assert '<strong>Int coverage:</strong> <span class="no-cov">no data</span>' in index_html
+        mod_page = (dest / "Svc/Health" / "index.html").read_text(encoding="utf-8")
+        assert "full-system report" not in mod_page
+
+
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1006,6 +1092,8 @@ TESTS = [
     test_catalog_multiple_codeql_checks,
     test_compare_flags_regression_and_new_module,
     test_compare_baseline_missing_reports_no_baseline,
+    test_mirror_int_artifact_lands_in_int_coverage,
+    test_catalog_without_int_data_keeps_no_data_cell,
 ]
 
 

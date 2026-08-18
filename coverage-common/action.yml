@@ -32,6 +32,20 @@ inputs:
       per-module steps.  Useful for diagnosing slow or stuck coverage runs.
     required: false
     default: "false"
+  mode:
+    description: >
+      'check' (default) builds/runs unit tests then gcovr per module.
+      'coverage' runs gcovr only, splitting coverage data already on disk
+      (e.g. from an instrumented integration-test run) per module without
+      re-running any tests.
+    required: false
+    default: "check"
+  build-cache:
+    description: >
+      Explicit build cache passed to fprime-util (--build-cache) in
+      'coverage' mode, e.g. the instrumented deployment's build directory.
+    required: false
+    default: ""
   include-autocoder-modules:
     description: >
       When 'true', also list autocoder-only modules (no hand-written C/C++
@@ -63,12 +77,14 @@ runs:
         echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
         echo "Discovered $(wc -l < modules.jsonl) modules"
 
-    - name: "Global coverage (fprime-util check --all --coverage)"
+    - name: "Global coverage"
       working-directory: ${{ inputs.working-directory }}
       shell: bash
       env:
         JOBS_INPUT: ${{ inputs.jobs }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
+        MODE: ${{ inputs.mode }}
+        BUILD_CACHE: ${{ inputs.build-cache }}
         DEBUG: ${{ inputs.debug }}
       run: |
         JOBS_FLAG=""
@@ -86,7 +102,16 @@ runs:
         # overflow (gcc#68080) defensively.  With gcov-12+ it should
         # never fire, but it's cheap insurance against future toolchain
         # regressions.
-        fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
+        BASE_CMD="check --all --coverage"
+        BUILD_CACHE_FLAG=""
+        if [ "${MODE}" = "coverage" ]; then
+          # gcovr-only: reuse coverage data already on disk, no test run
+          BASE_CMD="coverage --all"
+        fi
+        if [ -n "${BUILD_CACHE}" ]; then
+          BUILD_CACHE_FLAG="--build-cache ${BUILD_CACHE}"
+        fi
+        fprime-util ${BASE_CMD} ${JOBS_FLAG} ${TARGET_PLATFORM} ${BUILD_CACHE_FLAG} \
           --pass-through --json-summary coverage/summary.json \
           --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
           ${VERBOSE_FLAG}
@@ -98,6 +123,8 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        MODE: ${{ inputs.mode }}
+        BUILD_CACHE: ${{ inputs.build-cache }}
         STRICT: ${{ inputs.strict }}
         DEBUG: ${{ inputs.debug }}
       run: |
@@ -113,5 +140,7 @@ runs:
           --root . \
           --modules-jsonl "$MODULES_JSONL" \
           --target-platform "${TARGET_PLATFORM}" \
+          --mode "${MODE}" \
+          --build-cache "${BUILD_CACHE}" \
           ${STRICT_FLAG} \
           ${DEBUG_FLAG}

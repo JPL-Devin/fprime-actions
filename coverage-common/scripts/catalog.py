@@ -38,6 +38,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
+from urllib.parse import quote
 
 from _config import coverage_thresholds, load_config
 from _summary import Summary, Totals, load_summary
@@ -529,6 +530,13 @@ def render_module_index_html(
             entry.int_summary, entry.has_int_coverage, f"{int_subdir}/index.html",
             thresholds, missing_note="no coverage",
         )
+        # Also link the module's record in the full-system integration report
+        # (scroll-to-text fragment highlights the module's files where supported).
+        full_href = (
+            "../" * (entry.path.count("/") + 1)
+            + f"{int_subdir}/coverage-all.html#:~:text={quote(entry.path)}"
+        )
+        int_html += f' &middot; <a href="{html.escape(full_href)}">full-system report</a>'
     else:
         int_html = '<span class="no-cov">no data</span>'
     rows.append(f"<tr><td>Integration Test Coverage</td><td>{int_html}</td></tr>")
@@ -601,6 +609,8 @@ def render_index_html(
     generated_at: str,
     overall: Optional[Summary],
     overall_report: str,
+    overall_int: Optional[Summary],
+    overall_int_report: str,
     overall_codeql_checks: dict,
     check_labels: dict,
     entries: List[ModuleEntry],
@@ -619,7 +629,15 @@ def render_index_html(
         )
     else:
         parts.append('<strong>UT coverage:</strong> <span class="no-cov">no data</span>')
-    parts.append('<strong>Int coverage:</strong> <span class="no-cov">no data</span>')
+    if overall_int is not None and overall_int.line.total > 0:
+        int_tier = coverage_tier(overall_int.line.percent, True, thresholds)
+        parts.append(
+            f"<strong>Int coverage:</strong> {badge_html(int_tier)} "
+            f'<a href="{html.escape(overall_int_report)}">{overall_int.line.percent:.2f}% line</a> '
+            f"({overall_int.function.percent:.2f}% function, {overall_int.branch.percent:.2f}% branch)"
+        )
+    else:
+        parts.append('<strong>Int coverage:</strong> <span class="no-cov">no data</span>')
     for check_subdir, check_summary in overall_codeql_checks.items():
         name = html.escape(check_labels.get(check_subdir, check_subdir))
         if check_summary is not None:
@@ -661,6 +679,8 @@ def build_catalog(
     generated_at: str,
     overall: Optional[Summary],
     overall_report: str,
+    overall_int: Optional[Summary],
+    overall_int_report: str,
     overall_codeql_checks: dict,
     thresholds: CoverageThresholds,
 ) -> dict:
@@ -751,6 +771,12 @@ def build_catalog(
         overall_entry["report"] = overall_report
         overall_entry["tier"] = coverage_tier(overall.line.percent, True, thresholds)
 
+    overall_int_entry = None
+    if overall_int is not None and overall_int.line.total > 0:
+        overall_int_entry = overall_int.to_catalog_entry()
+        overall_int_entry["report"] = overall_int_report
+        overall_int_entry["tier"] = coverage_tier(overall_int.line.percent, True, thresholds)
+
     overall_codeql_entry = None
     overall_agg = aggregate_codeql(overall_codeql_checks.values())
     if overall_agg is not None:
@@ -781,6 +807,7 @@ def build_catalog(
             "silver": thresholds.silver,
         },
         "overall": overall_entry,
+        "overall_int": overall_int_entry,
         "overall_codeql": overall_codeql_entry,
         "overall_codeql_checks": overall_checks_entry,
         "modules": out_modules,
@@ -941,6 +968,8 @@ def main(argv=None) -> int:
     overall_dir = dest / subdir if subdir else dest
     overall_summary = load_summary(overall_dir / "summary.json")
     overall_report = f"{subdir_segment}coverage-all.html" if subdir else "coverage-all.html"
+    overall_int_summary = load_summary(dest / int_subdir / "summary.json")
+    overall_int_report = f"{int_subdir}/coverage-all.html"
 
     catalog = build_catalog(
         modules=entries,
@@ -950,6 +979,8 @@ def main(argv=None) -> int:
         generated_at=generated_at,
         overall=overall_summary,
         overall_report=overall_report,
+        overall_int=overall_int_summary,
+        overall_int_report=overall_int_report,
         overall_codeql_checks=overall_codeql_checks,
         thresholds=thresholds,
     )
@@ -962,6 +993,8 @@ def main(argv=None) -> int:
         generated_at=generated_at,
         overall=overall_summary,
         overall_report=overall_report,
+        overall_int=overall_int_summary,
+        overall_int_report=overall_int_report,
         overall_codeql_checks=overall_codeql_checks,
         check_labels=check_labels,
         entries=entries,

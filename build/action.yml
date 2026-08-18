@@ -9,6 +9,10 @@ inputs:
     description: "Extra flags passed to fprime-util generate (e.g. -DFPRIME_ENABLE_FRAMEWORK_UTS=OFF)"
     required: false
     default: ""
+  build-type:
+    description: "CMake build type (e.g. Debug, Release); empty uses the project default"
+    required: false
+    default: ""
   target-platform:
     description: "Target platform/toolchain passed to fprime-util (e.g. native, aarch64-linux)"
     required: false
@@ -29,6 +33,7 @@ runs:
       shell: bash
       env:
         GENERATE_ARGS: ${{ inputs.generate-args }}
+        BUILD_TYPE: ${{ inputs.build-type }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
       run: |
         if [ "${RUNNER_DEBUG:-0}" = "1" ]; then
@@ -36,9 +41,13 @@ runs:
         else
           VERBOSE_FLAG=
         fi
+        BUILD_TYPE_ARG=""
+        if [ -n "${BUILD_TYPE}" ]; then
+          BUILD_TYPE_ARG="-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+        fi
         set -o pipefail
         chmod +x "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"
-        fprime-util generate ${VERBOSE_FLAG} ${GENERATE_ARGS} ${TARGET_PLATFORM} 2>&1 | "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"
+        fprime-util generate ${VERBOSE_FLAG} ${BUILD_TYPE_ARG} ${GENERATE_ARGS} ${TARGET_PLATFORM} 2>&1 | "${GITHUB_ACTION_PATH}/../output-cleaner/output-cleaner"
     - name: "Build"
       working-directory: ${{ inputs.working-directory }}
       shell: bash

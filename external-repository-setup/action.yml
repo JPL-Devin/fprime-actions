@@ -36,6 +36,19 @@ runs:
         ref: ${{ inputs.target_ref }}
         fetch-tags: true
         persist-credentials: false
+    - name: "Capture pinned F´ revision"
+      id: pinned
+      shell: bash
+      env:
+        FPRIME_LOCATION: ${{ inputs.fprime_location }}
+      run: |
+        relative_location="${FPRIME_LOCATION#./}"
+        pinned_sha="$(git -C "$FPRIME_LOCATION" rev-parse HEAD 2>/dev/null || true)"
+        pinned_remote="$(git config -f .gitmodules --get "submodule.${relative_location}.url" 2>/dev/null || true)"
+        {
+          echo "sha=${pinned_sha}"
+          echo "remote=${pinned_remote}"
+        } >> "$GITHUB_OUTPUT"
     - name: "Overlay current repository revision"
       uses: actions/checkout@v5
       with:
@@ -44,6 +57,60 @@ runs:
         ref: ${{ github.ref }}
         fetch-tags: true
         persist-credentials: false
+    - name: "Report F´ submodule drift"
+      shell: bash
+      env:
+        FPRIME_LOCATION: ${{ inputs.fprime_location }}
+        PINNED_SHA: ${{ steps.pinned.outputs.sha }}
+        PINNED_REMOTE: ${{ steps.pinned.outputs.remote }}
+      run: |
+        set +e
+        overlaid_sha="$(git -C "$FPRIME_LOCATION" rev-parse HEAD 2>/dev/null)"
+        if [ -z "$PINNED_SHA" ] || [ -z "$overlaid_sha" ]; then
+          {
+            echo "### F´ revision overlay"
+            echo "Pinned or overlaid F´ revision was unavailable."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        if [ -n "$PINNED_REMOTE" ]; then
+          if [ "$(git -C "$FPRIME_LOCATION" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+            git -C "$FPRIME_LOCATION" fetch --no-tags --unshallow \
+              "$PINNED_REMOTE" "$PINNED_SHA" >/dev/null 2>&1
+          else
+            git -C "$FPRIME_LOCATION" fetch --no-tags \
+              "$PINNED_REMOTE" "$PINNED_SHA" >/dev/null 2>&1
+          fi
+        fi
+        commit_count="$(git -C "$FPRIME_LOCATION" rev-list --count "${PINNED_SHA}..${overlaid_sha}" 2>/dev/null)"
+        if [ -z "$commit_count" ]; then
+          commit_count="unreachable"
+        fi
+        pin_date="$(git -C "$FPRIME_LOCATION" show -s --format=%cs "$PINNED_SHA" 2>/dev/null)"
+        if [ -z "$pin_date" ]; then
+          pin_date="unavailable"
+        fi
+        {
+          echo "### F´ revision overlay"
+          echo "- Pinned revision: \`${PINNED_SHA}\`"
+          echo "- Overlaid revision: \`${overlaid_sha}\`"
+          echo "- Commits between revisions: ${commit_count}"
+          echo "- Pin date: ${pin_date}"
+        } >> "$GITHUB_STEP_SUMMARY"
+        warning=false
+        if [ "$commit_count" != "unreachable" ] && [ "$commit_count" -gt 100 ]; then
+          warning=true
+        fi
+        if [ "$pin_date" != "unavailable" ]; then
+          pin_epoch="$(date -d "$pin_date" +%s 2>/dev/null)"
+          now_epoch="$(date +%s)"
+          if [ -n "$pin_epoch" ] && [ $((now_epoch - pin_epoch)) -gt $((60 * 86400)) ]; then
+            warning=true
+          fi
+        fi
+        if [ "$warning" = true ]; then
+          echo "::warning title=F´ submodule drift::The pinned F´ revision is stale relative to the overlaid revision."
+        fi
     # Cache pip's download/wheel cache so requirement installs avoid
     # re-downloading packages on every job.
     - name: "Cache pip downloads"

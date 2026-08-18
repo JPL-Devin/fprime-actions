@@ -401,7 +401,8 @@ def test_catalog_groups_and_rollup():
         assert "Svc/CmdDispatcher" in index_html
         assert "Drv/LinuxGpio" in index_html
         assert ">UT Coverage</th>" in index_html
-        assert ">INT Coverage</th>" in index_html
+        assert ">Int Coverage</th>" in index_html
+        assert ">Checklist</th>" in index_html
         assert ">CodeQL</th>" in index_html
         assert "badge-platinum" in index_html
         assert "badge-bronze" in index_html
@@ -414,8 +415,8 @@ def test_catalog_groups_and_rollup():
         mod_page = (dest / "Svc/CmdDispatcher/index.html").read_text(encoding="utf-8")
         assert 'href="coverage/index.html"' in mod_page
         assert "badge-platinum" in mod_page
-        assert ">UT Coverage</td>" in mod_page
-        assert ">INT Coverage</td>" in mod_page
+        assert ">Unit Test Coverage</td>" in mod_page
+        assert ">Integration Test Coverage</td>" in mod_page
         assert ">CodeQL</td>" in mod_page
         assert "no data" in mod_page  # codeql not published yet
         assert 'href="../../index.html"' in mod_page  # back-link to checklist

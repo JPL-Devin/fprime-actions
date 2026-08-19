@@ -47,6 +47,7 @@ import check_req_ports  # noqa: E402
 import check_req_telemetry  # noqa: E402
 import check_req_verification  # noqa: E402
 import check_sdd  # noqa: E402
+import _doxygen  # noqa: E402
 import check_sm_actions  # noqa: E402
 import check_static_analysis  # noqa: E402
 import check_topology_build  # noqa: E402
@@ -444,6 +445,25 @@ def test_sdd_grading() -> None:
     check("sdd: override demotes gold to silver", graded["tier"] == "silver", str(graded))
 
 
+def test_doxygen_mapping() -> None:
+    check(
+        "doxygen: page mangling",
+        _doxygen.doxygen_class_page("Svc::CommandDispatcherImpl")
+        == "class_svc_1_1_command_dispatcher_impl.html",
+    )
+    check(
+        "doxygen: nested namespaces",
+        _doxygen.doxygen_class_page("Svc::Ccsds::ApidManager")
+        == "class_svc_1_1_ccsds_1_1_apid_manager.html",
+    )
+    check(
+        "doxygen: underscore escaped",
+        _doxygen.doxygen_class_page("Fw::My_Type") == "class_fw_1_1_my___type.html",
+    )
+    classes = _doxygen.find_component_classes(WIDGET)
+    check("doxygen: widget class found", classes == ["Svc::Widget"], str(classes))
+
+
 def test_run_checks_and_catalog() -> None:
     import catalog
 
@@ -563,6 +583,25 @@ def test_run_checks_and_catalog() -> None:
         sdd_summary = json.loads((dest / "Svc" / "Widget" / "sdd" / "summary.json").read_text())
         check("check_sdd: widget summary", sdd_summary["has_sdd"] and sdd_summary["tier"] in ("bronze", "silver"))
         check("check_sdd: sdd.md copied", (dest / "Svc" / "Widget" / "sdd" / "sdd.md").is_file())
+        check(
+            "check_sdd: rendered url",
+            sdd_summary.get("rendered_url")
+            == "https://fprime.jpl.nasa.gov/devel/Svc/Widget/docs/sdd/",
+            str(sdd_summary.get("rendered_url")),
+        )
+        check(
+            "check_sdd: doxygen links",
+            sdd_summary.get("doxygen")
+            == [{
+                "name": "Svc::Widget",
+                "url": "https://fprime.jpl.nasa.gov/devel/docs/reference/api/cpp/html/"
+                       "class_svc_1_1_widget.html",
+            }],
+            str(sdd_summary.get("doxygen")),
+        )
+        sdd_page = (dest / "Svc" / "Widget" / "sdd" / "index.html").read_text()
+        check("check_sdd: page rendered link", "rendered view" in sdd_page and "sdd.md" in sdd_page)
+        check("check_sdd: page doxygen link", "class_svc_1_1_widget.html" in sdd_page)
         empty_summary = json.loads((dest / "Svc" / "Empty" / "sdd" / "summary.json").read_text())
         check(
             "check_sdd: missing SDD is bronze",
@@ -598,6 +637,15 @@ def test_run_checks_and_catalog() -> None:
             "<td>Software Description Document</td>" in module_page
             and "sdd/index.html" in module_page,
         )
+        check(
+            "catalog: module page rendered SDD link",
+            "https://fprime.jpl.nasa.gov/devel/Svc/Widget/docs/sdd/" in module_page,
+        )
+        check(
+            "catalog: module page Doxygen row",
+            "<td>API Documentation (Doxygen)</td>" in module_page
+            and "class_svc_1_1_widget.html" in module_page,
+        )
 
 
 def main() -> int:
@@ -612,6 +660,7 @@ def main() -> int:
         test_build_level_checks_offline,
         test_checks_tier,
         test_sdd_grading,
+        test_doxygen_mapping,
         test_run_checks_and_catalog,
     ]
     for test in tests:

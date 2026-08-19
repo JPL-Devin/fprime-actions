@@ -574,14 +574,27 @@ def render_module_index_html(
     rows.append(f"<tr><td>Checklist</td><td>{checks_html}</td></tr>")
 
     if entry.sdd_summary is not None:
-        label = "view" if entry.sdd_summary.get("has_sdd") else "missing"
+        label = "grade" if entry.sdd_summary.get("has_sdd") else "missing"
         sdd_html = (
             f'{badge_html(entry.sdd_tier)} '
             f'<a href="{html.escape(sdd_subdir)}/index.html">{label}</a>'
         )
+        rendered = entry.sdd_summary.get("rendered_url")
+        if rendered:
+            sdd_html += f' &middot; <a href="{html.escape(str(rendered))}">rendered view</a>'
     else:
         sdd_html = f'{badge_html("bronze")} <span class="no-cov">no data</span>'
     rows.append(f"<tr><td>Software Description Document</td><td>{sdd_html}</td></tr>")
+
+    doxygen = (entry.sdd_summary or {}).get("doxygen") or []
+    if doxygen:
+        links = " &middot; ".join(
+            f'<a href="{html.escape(str(d.get("url", "")))}"><code>{html.escape(str(d.get("name", "")))}</code></a>'
+            for d in doxygen
+            if d.get("url")
+        )
+        if links:
+            rows.append(f"<tr><td>API Documentation (Doxygen)</td><td>{links}</td></tr>")
 
     depth = entry.path.count("/") + 1
     checklist_href = "../" * depth + "index.html"
@@ -591,7 +604,7 @@ def render_module_index_html(
         f"<title>{html.escape(entry.path)} \u2014 {html.escape(ref)}</title>"
         f"<style>{MODULE_CSS}</style></head><body>"
         f"<h1><code>{html.escape(entry.path)}</code> {badge_html(rollup)}</h1>"
-        f'<div class="meta"><a href="{checklist_href}">\u2190 checklist</a> &middot; '
+        f'<div class="meta"><a href="{checklist_href}">\u2190 all modules</a> &middot; '
         f"{html.escape(ref_type)} <code>{html.escape(ref)}</code> "
         f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
         f'<div class="welcome">{welcome}</div>'
@@ -657,9 +670,9 @@ def render_index_html(
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
-        f"<title>F\u00b4 Module Checklist \u2014 {html.escape(ref)}</title>"
+        f"<title>F\u00b4 Component Quality \u2014 {html.escape(ref)}</title>"
         f"<style>{CSS}</style></head><body>"
-        f"<h1>F\u00b4 Module Checklist</h1>"
+        f"<h1>F\u00b4 Component Quality</h1>"
         f'<div class="meta">{html.escape(ref_type)} <code>{html.escape(ref)}</code> '
         f"@ <code>{html.escape(commit[:12])}</code> &middot; generated {html.escape(generated_at)}</div>"
         f'<div class="welcome">{WELCOME_HTML}</div>'

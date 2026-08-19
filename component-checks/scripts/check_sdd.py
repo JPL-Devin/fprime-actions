@@ -40,7 +40,8 @@ _COMMON_SCRIPTS = str(Path(__file__).resolve().parents[2] / "coverage-common" / 
 if _COMMON_SCRIPTS not in sys.path:
     sys.path.insert(0, _COMMON_SCRIPTS)
 
-from _config import load_config
+from _config import docs_site, load_config
+from _doxygen import doxygen_class_page, find_component_classes
 from _fpp import FppModel, load_module_model
 
 SCHEMA_VERSION = 1
@@ -239,7 +240,14 @@ def render_page(module_path: str, metrics: dict, *, ref: str, commit: str, gener
     tier = metrics["tier"]
     rows = []
     if metrics.get("has_sdd"):
-        rows.append('<tr><td>Document</td><td><a href="sdd.md">sdd.md</a></td></tr>')
+        rendered = metrics.get("rendered_url")
+        doc_html = '<a href="sdd.md">sdd.md</a>'
+        if rendered:
+            doc_html = (
+                f'<a href="{html.escape(rendered)}">rendered view</a> &middot; '
+                '<a href="sdd.md">raw markdown</a>'
+            )
+        rows.append(f"<tr><td>Document</td><td>{doc_html}</td></tr>")
         for key, label in METRIC_LABELS:
             value = metrics.get(key)
             if isinstance(value, list):
@@ -247,6 +255,13 @@ def render_page(module_path: str, metrics: dict, *, ref: str, commit: str, gener
             rows.append(f"<tr><td>{label}</td><td>{html.escape(str(value))}</td></tr>")
     else:
         rows.append('<tr><td>Document</td><td><span class="missing">no docs/sdd.md found</span></td></tr>')
+    doxygen = metrics.get("doxygen") or []
+    if doxygen:
+        links = " &middot; ".join(
+            f'<a href="{html.escape(d["url"])}"><code>{html.escape(d["name"])}</code></a>'
+            for d in doxygen
+        )
+        rows.append(f"<tr><td>API documentation (Doxygen)</td><td>{links}</td></tr>")
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
@@ -284,7 +299,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
-    thresholds = sdd_thresholds(load_config(args.config))
+    config = load_config(args.config)
+    thresholds = sdd_thresholds(config)
+    site = docs_site(config)
     generated_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     modules: list[str] = []
@@ -301,6 +318,13 @@ def main(argv=None) -> int:
         if sdd_path.is_file():
             text = sdd_path.read_text(encoding="utf-8", errors="replace")
         metrics = grade_sdd(text, thresholds, load_module_model(module_dir))
+        if site and args.ref:
+            if text is not None:
+                metrics["rendered_url"] = site.sdd_url(args.ref, module_path)
+            metrics["doxygen"] = [
+                {"name": name, "url": site.doxygen_url(args.ref, doxygen_class_page(name))}
+                for name in find_component_classes(module_dir)
+            ]
 
         out_dir = args.dest / module_path / args.sdd_subdirectory
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -108,6 +108,7 @@ def mirror_module(
     module_path: str,
     has_ut: bool,
     subdir: str,
+    artifact: str = "ut",
 ) -> bool:
     """Mirror a single module's coverage outputs.  Returns ``has_coverage``."""
     src_cov = source / module_path / "coverage"
@@ -121,7 +122,12 @@ def mirror_module(
         _copy_coverage_contents(src_cov, dst_cov, rename_index=True)
         return True
 
-    if not has_ut:
+    if artifact == "int":
+        reason = (
+            "This module was not exercised by the system integration-test run "
+            "(gcovr emitted no measurable lines for it)."
+        )
+    elif not has_ut:
         reason = (
             "This module is registered with register_fprime_module() but does not "
             "declare unit tests (no register_fprime_ut() call). No coverage data "
@@ -160,6 +166,12 @@ def main(argv=None) -> int:
         help="JSON-Lines module list from discover.py",
     )
     parser.add_argument("--coverage-subdirectory", default="coverage")
+    parser.add_argument("--int-coverage-subdirectory", default="int-coverage")
+    parser.add_argument(
+        "--artifact", choices=("ut", "int"), default="ut",
+        help="Which coverage artifact the source tree holds: unit-test ('ut') "
+        "or integration-test ('int'); selects the destination subdirectory",
+    )
     parser.add_argument("--ref", required=True)
     parser.add_argument("--ref-type", default="branch", choices=("branch", "tag"))
     parser.add_argument("--commit", required=True)
@@ -171,7 +183,9 @@ def main(argv=None) -> int:
     source = args.source.resolve()
     dest = args.dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
-    subdir = args.coverage_subdirectory
+    int_subdir = args.int_coverage_subdirectory or "int-coverage"
+    # Integration artifacts land under int-coverage/; UT keeps the historic layout.
+    subdir = int_subdir if args.artifact == "int" else args.coverage_subdirectory
 
     if not args.modules_jsonl.is_file():
         print(f"mirror: missing module list {args.modules_jsonl}", file=sys.stderr)
@@ -189,6 +203,7 @@ def main(argv=None) -> int:
             module_path=rec["path"],
             has_ut=bool(rec.get("has_ut", False)),
             subdir=subdir,
+            artifact=args.artifact,
         )
 
     # Defer to catalog.py for catalog.json + top-level index.html.
@@ -197,7 +212,8 @@ def main(argv=None) -> int:
     catalog_argv = [
         "--dest", str(dest),
         "--modules-jsonl", str(args.modules_jsonl),
-        "--coverage-subdirectory", subdir,
+        "--coverage-subdirectory", args.coverage_subdirectory,
+        "--int-coverage-subdirectory", int_subdir,
         "--ref", args.ref,
         "--ref-type", args.ref_type,
         "--commit", args.commit,

@@ -32,6 +32,21 @@ inputs:
       per-module steps.  Useful for diagnosing slow or stuck coverage runs.
     required: false
     default: "false"
+  mode:
+    description: >
+      'check' (default) builds/runs unit tests then gcovr per module.
+      'coverage' runs gcovr only, splitting coverage data already on disk
+      (e.g. from an instrumented integration-test run) per module without
+      re-running any tests.
+    required: false
+    default: "check"
+  project-root:
+    description: >
+      CMake project root passed to fprime-util (-r) in 'coverage' mode:
+      the deployment project that owns the instrumented build cache
+      (e.g. the Ref deployment's project directory).
+    required: false
+    default: ""
   include-autocoder-modules:
     description: >
       When 'true', also list autocoder-only modules (no hand-written C/C++
@@ -63,12 +78,14 @@ runs:
         echo "modules-jsonl=$(pwd)/modules.jsonl" >> "$GITHUB_OUTPUT"
         echo "Discovered $(wc -l < modules.jsonl) modules"
 
-    - name: "Global coverage (fprime-util check --all --coverage)"
+    - name: "Global coverage"
       working-directory: ${{ inputs.working-directory }}
       shell: bash
       env:
         JOBS_INPUT: ${{ inputs.jobs }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
+        MODE: ${{ inputs.mode }}
+        PROJECT_ROOT: ${{ inputs.project-root }}
         DEBUG: ${{ inputs.debug }}
       run: |
         JOBS_FLAG=""
@@ -86,10 +103,26 @@ runs:
         # overflow (gcc#68080) defensively.  With gcov-12+ it should
         # never fire, but it's cheap insurance against future toolchain
         # regressions.
-        fprime-util check --all --coverage ${JOBS_FLAG} ${TARGET_PLATFORM} \
+        BASE_CMD="check --all --coverage"
+        ROOT_FLAG=""
+        CACHE_FLAG=""
+        EXTRA_FILTER=""
+        if [ "${MODE}" = "coverage" ]; then
+          # --existing: reuse coverage data already on disk, no test run
+          BASE_CMD="check --all --coverage --existing"
+          # The deployment's normal (non-ut) build cache holds the data
+          CACHE_FLAG="--build-cache ${PROJECT_ROOT}/build-fprime-automatic-${TARGET_PLATFORM:-native}"
+          # The global gcovr filter is the deployment project's root; also
+          # include this working tree so framework modules are reported.
+          EXTRA_FILTER="--filter $(pwd)"
+        fi
+        if [ -n "${PROJECT_ROOT}" ]; then
+          ROOT_FLAG="-r ${PROJECT_ROOT}"
+        fi
+        fprime-util ${BASE_CMD} ${JOBS_FLAG} ${TARGET_PLATFORM} ${ROOT_FLAG} ${CACHE_FLAG} \
           --pass-through --json-summary coverage/summary.json \
           --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
-          ${VERBOSE_FLAG}
+          ${EXTRA_FILTER} ${VERBOSE_FLAG}
 
     - name: "Per-module coverage"
       working-directory: ${{ inputs.working-directory }}
@@ -98,6 +131,8 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         TARGET_PLATFORM: ${{ inputs.target-platform }}
         MODULES_JSONL: ${{ steps.discover.outputs.modules-jsonl }}
+        MODE: ${{ inputs.mode }}
+        PROJECT_ROOT: ${{ inputs.project-root }}
         STRICT: ${{ inputs.strict }}
         DEBUG: ${{ inputs.debug }}
       run: |
@@ -109,9 +144,16 @@ runs:
         if [ "${DEBUG}" = "true" ]; then
           DEBUG_FLAG="--debug"
         fi
+        BUILD_CACHE=""
+        if [ "${MODE}" = "coverage" ]; then
+          BUILD_CACHE="${PROJECT_ROOT}/build-fprime-automatic-${TARGET_PLATFORM:-native}"
+        fi
         python3 "${ACTION_PATH}/scripts/run_coverage.py" \
           --root . \
           --modules-jsonl "$MODULES_JSONL" \
           --target-platform "${TARGET_PLATFORM}" \
+          --mode "${MODE}" \
+          --project-root "${PROJECT_ROOT}" \
+          --build-cache "${BUILD_CACHE}" \
           ${STRICT_FLAG} \
           ${DEBUG_FLAG}

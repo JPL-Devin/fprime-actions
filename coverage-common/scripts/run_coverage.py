@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Run per-module gcovr coverage via fprime-util check --coverage.
+"""Run per-module gcovr coverage via fprime-util.
 
-Reads the modules.jsonl produced by discover.py, skips modules without
-register_fprime_ut(), and runs ``fprime-util check --coverage`` in each
-eligible module directory.  After each successful run, renames
-``coverage/coverage.html`` to ``coverage/index.html`` when present.
+Reads the modules.jsonl produced by discover.py.  In the default
+``--mode check`` it skips modules without register_fprime_ut() and runs
+``fprime-util check --coverage`` in each eligible module directory.  In
+``--mode coverage`` it runs ``fprime-util check --coverage --existing``
+in every module directory, splitting coverage data already on disk
+(e.g. from a system integration-test run) per module without re-running
+any tests; use ``--project-root``/``--build-cache`` to point at the
+deployment project owning the instrumented build cache.  After each
+successful run, renames ``coverage/coverage.html`` to
+``coverage/index.html`` when present.
 
 Failures are printed to stderr (``[FAIL] <module> (exit N)``) and a
 summary line is always written; the exit code depends on ``--strict``:
@@ -18,19 +24,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
-def _run_module(mod: str, root: Path, target_platform: str, debug: bool) -> bool:
+def _run_module(
+    mod: str, root: Path, target_platform: str, debug: bool,
+    mode: str = "check", project_root: str = "", build_cache: str = "",
+) -> bool:
     """Run coverage for a single module.  Returns True on success."""
     mod_dir = root / mod
     cmd = ["fprime-util", "check", "--coverage"]
+    if mode == "coverage":
+        cmd.append("--existing")
     if target_platform:
         cmd.append(target_platform)
+    if project_root:
+        cmd.extend(["-r", project_root])
+    if build_cache:
+        cmd.extend(["--build-cache", build_cache])
     cmd.extend([
         "--pass-through",
         "--json-summary", "coverage/summary.json",
@@ -62,6 +75,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Path to modules.jsonl from discover.py")
     parser.add_argument("--target-platform", default="",
                         help="Target platform forwarded to fprime-util")
+    parser.add_argument("--mode", choices=("check", "coverage"), default="check",
+                        help="'check' runs unit tests then gcovr; 'coverage' runs gcovr "
+                        "only (--existing), from coverage data already on disk (all modules)")
+    parser.add_argument("--project-root", default="",
+                        help="Deployment project root forwarded to fprime-util -r (coverage mode)")
+    parser.add_argument("--build-cache", default="",
+                        help="Instrumented build cache forwarded to fprime-util --build-cache (coverage mode)")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero if any module failed (default: lenient, exit 0)")
     parser.add_argument("--debug", action="store_true",
@@ -79,11 +99,14 @@ def main(argv: list[str] | None = None) -> int:
     for rec in records:
         mod = rec["path"]
         has_ut = bool(rec.get("has_ut", False))
-        if not has_ut:
+        # Integration coverage measures every module, not just those with UTs.
+        if args.mode == "check" and not has_ut:
             print(f"[skip] {mod} (no register_fprime_ut)")
             skipped += 1
             continue
-        if not _run_module(mod, root, args.target_platform, args.debug):
+        if not _run_module(mod, root, args.target_platform, args.debug,
+                           mode=args.mode, project_root=args.project_root,
+                           build_cache=args.build_cache):
             failed += 1
         else:
             covered += 1

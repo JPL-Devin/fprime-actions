@@ -14,14 +14,14 @@
 #
 # Environment:
 #   BASELINE_DIR is exported to the mirror command (worktree root).
-#   PUBLISH_RETRIES overrides the retry count (default 3).
+#   PUBLISH_RETRIES overrides the retry count (default 10).
 set -euo pipefail
 
 BASELINE_BRANCH="$1"; shift
 COMMIT_SHA="$1"; shift
 COMMIT_PREFIX="$1"; shift
 
-RETRIES="${PUBLISH_RETRIES:-3}"
+RETRIES="${PUBLISH_RETRIES:-10}"
 BASELINE_DIR="${RUNNER_TEMP:-/tmp}/fprime-baseline-publish"
 export BASELINE_DIR
 
@@ -63,6 +63,8 @@ for attempt in $(seq 1 "$RETRIES"); do
         exit 0
     fi
     echo "publish_baseline: push rejected (attempt ${attempt}/${RETRIES}); refetching and retrying." >&2
+    # Random backoff so concurrent publishers racing for the branch de-sync.
+    sleep "$(( (RANDOM % 20) + 5 ))"
 done
 
 echo "publish_baseline: failed to push ${BASELINE_BRANCH} after ${RETRIES} attempts." >&2

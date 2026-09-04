@@ -28,6 +28,13 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # Self-hosted runners reuse the workspace; locks orphaned by a killed git
+    # process survive actions/checkout's clean and break every later checkout.
+    - name: "Remove stale git lock files"
+      run: |
+        find "${GITHUB_WORKSPACE}" -path '*/.git/*' -name '*.lock' -print -delete
+        find "${GITHUB_WORKSPACE}" -path '*/.git/objects/*' \( -name 'tmp_pack_*' -o -name 'tmp_obj_*' -o -name 'tmp_idx_*' \) -print -delete
+      shell: bash
     - name: "Checkout target repository"
       uses: actions/checkout@v5
       with:

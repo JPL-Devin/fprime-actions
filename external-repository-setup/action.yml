@@ -59,7 +59,7 @@ runs:
         path: |
           ~/.cache/pip
           ~/Library/Caches/pip
-        key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+        key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt', '**/overrides.txt') }}
         restore-keys: |
           pip-${{ runner.os }}-
     - name: "Enable ccache"
@@ -79,6 +79,11 @@ runs:
         if [ -f ./requirements.txt ]
         then
             pip install -r ./requirements.txt
+        fi
+        # Project pins that must supersede the framework's; installed last so they win
+        if [ -f ./overrides.txt ]
+        then
+            pip install -r ./overrides.txt
         fi
       shell: bash
     - name: "Install CI tooling"

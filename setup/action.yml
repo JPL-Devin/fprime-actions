@@ -50,6 +50,11 @@ runs:
     env:
       FPRIME_LOCATION: ${{ inputs.location }}
     run: pip3 install -U -r ${FPRIME_LOCATION}/requirements.txt
+  # Runner images pre-set JAVA_HOME to a system JDK. Clear it so Java-based
+  # tools (fpp) resolve the pip-installed `java` (fprime-jre) from PATH.
+  - name: "Clear JAVA_HOME"
+    shell: bash
+    run: echo "JAVA_HOME=" >> "${GITHUB_ENV}"
   - run: which fprime-util
     shell: bash
   - run: which fprime-gds

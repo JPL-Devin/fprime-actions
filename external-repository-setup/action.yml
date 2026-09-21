@@ -86,6 +86,11 @@ runs:
             pip install -r ./overrides.txt
         fi
       shell: bash
+    # Runner images pre-set JAVA_HOME to a system JDK. Clear it so Java-based
+    # tools (fpp) resolve the pip-installed `java` (fprime-jre) from PATH.
+    - name: "Clear JAVA_HOME"
+      run: echo "JAVA_HOME=" >> "${GITHUB_ENV}"
+      shell: bash
     - name: "Install CI tooling"
       run: |
         pip install git+https://github.com/fprime-community/fprime-ci@devel

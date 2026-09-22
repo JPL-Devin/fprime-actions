@@ -51,17 +51,19 @@ runs:
         ref: ${{ github.ref }}
         fetch-tags: true
         persist-credentials: false
-    # Cache pip's download/wheel cache so requirement installs avoid
-    # re-downloading packages on every job.
+    # Cache pip downloads/wheels so requirement installs avoid re-downloading.
+    # Rooted in RUNNER_TEMP: actions/cache archives workspace-relative paths, and
+    # only _work/_temp sits at the same place on every runner layout (~ does not).
+    - name: "Configure pip cache directory"
+      run: echo "PIP_CACHE_DIR=${RUNNER_TEMP}/pip-cache" >> "${GITHUB_ENV}"
+      shell: bash
     - name: "Cache pip downloads"
       uses: actions/cache@v4
       with:
-        path: |
-          ~/.cache/pip
-          ~/Library/Caches/pip
-        key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt', '**/overrides.txt') }}
+        path: ${{ runner.temp }}/pip-cache
+        key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/requirements.txt', '**/overrides.txt') }}
         restore-keys: |
-          pip-${{ runner.os }}-
+          pip-${{ runner.os }}-${{ runner.arch }}-
     - name: "Enable ccache"
       if: ${{ inputs.stage == 'all' || inputs.stage == 'build' }}
       uses: nasa/fprime-actions/ccache@devel

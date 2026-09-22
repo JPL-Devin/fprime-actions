@@ -1,0 +1,96 @@
+name: "Bump F´ submodule"
+description: "Update a repository's F´ submodule to a branch revision and commit the bump"
+inputs:
+  fprime-path:
+    description: "Path to the F´ submodule"
+    required: false
+    default: "lib/fprime"
+  fprime-repository:
+    description: "F´ repository to resolve"
+    required: false
+    default: "nasa/fprime"
+  fprime-ref:
+    description: "F´ branch or ref to resolve"
+    required: false
+    default: "devel"
+  branch:
+    description: "Fixed branch on which to create the bump commit"
+    required: false
+    default: "auto/bump-fprime"
+  git-user-name:
+    description: "Git author name for the bump commit"
+    required: false
+    default: "github-actions[bot]"
+  git-user-email:
+    description: "Git author email for the bump commit"
+    required: false
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+outputs:
+  bumped:
+    description: "Whether the submodule was changed"
+    value: ${{ steps.bump.outputs.bumped }}
+  old-sha:
+    description: "Previously pinned F´ revision"
+    value: ${{ steps.bump.outputs.old-sha }}
+  new-sha:
+    description: "Resolved F´ revision"
+    value: ${{ steps.bump.outputs.new-sha }}
+  commit-count:
+    description: "Number of F´ commits between the old and new revisions"
+    value: ${{ steps.bump.outputs.commit-count }}
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve and commit F´ bump"
+      id: bump
+      shell: bash
+      env:
+        FPRIME_PATH: ${{ inputs.fprime-path }}
+        FPRIME_REPOSITORY: ${{ inputs.fprime-repository }}
+        FPRIME_REF: ${{ inputs.fprime-ref }}
+        BUMP_BRANCH: ${{ inputs.branch }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
+      run: |
+        set -euo pipefail
+        old_sha="$(git -C "$FPRIME_PATH" rev-parse HEAD)"
+        new_sha="$(git ls-remote "https://github.com/${FPRIME_REPOSITORY}.git" \
+          "refs/heads/${FPRIME_REF}" | awk 'NR == 1 { print $1 }')"
+        if [ -z "$new_sha" ]; then
+          echo "Unable to resolve ${FPRIME_REPOSITORY}@${FPRIME_REF}" >&2
+          exit 1
+        fi
+
+        commit_count=0
+        if [ "$old_sha" != "$new_sha" ]; then
+          if [ "$(git -C "$FPRIME_PATH" rev-parse --is-shallow-repository)" = "true" ]; then
+            git -C "$FPRIME_PATH" fetch --no-tags --unshallow \
+              "https://github.com/${FPRIME_REPOSITORY}.git" "$new_sha"
+          else
+            git -C "$FPRIME_PATH" fetch --no-tags \
+              "https://github.com/${FPRIME_REPOSITORY}.git" "$new_sha"
+          fi
+          git -C "$FPRIME_PATH" fetch --no-tags \
+            "https://github.com/${FPRIME_REPOSITORY}.git" "$old_sha" || true
+          if commit_count="$(git -C "$FPRIME_PATH" rev-list --count "${old_sha}..${new_sha}" 2>/dev/null)"; then
+            :
+          else
+            commit_count="unknown"
+          fi
+          git -C "$FPRIME_PATH" checkout --detach "$new_sha"
+          git -C "$FPRIME_PATH" submodule update --init --recursive
+          git switch -C "$BUMP_BRANCH"
+          git add "$FPRIME_PATH"
+          git config user.name "$GIT_USER_NAME"
+          git config user.email "$GIT_USER_EMAIL"
+          git commit -m "Bump fprime submodule to ${new_sha:0:12}"
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "bumped=false" >> "$GITHUB_OUTPUT"
+          echo "F´ submodule is already at ${new_sha}"
+        fi
+        {
+          echo "old-sha=${old_sha}"
+          echo "new-sha=${new_sha}"
+          echo "commit-count=${commit_count}"
+        } >> "$GITHUB_OUTPUT"

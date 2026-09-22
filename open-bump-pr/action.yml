@@ -1,0 +1,108 @@
+name: "Open or update F´ bump PR"
+description: "Push a fixed F´ bump branch and maintain its single long-lived pull request"
+inputs:
+  github-token:
+    description: "Repository-local GitHub token used to push and manage the pull request"
+    required: false
+    default: ${{ github.token }}
+  branch:
+    description: "Fixed bump branch to push"
+    required: false
+    default: "auto/bump-fprime"
+  base:
+    description: "Base branch for the pull request"
+    required: false
+    default: "devel"
+  fprime-repository:
+    description: "F´ repository used for revision links"
+    required: false
+    default: "nasa/fprime"
+  build-result:
+    description: "Build result at the new submodule pin (success or failure)"
+    required: true
+  old-sha:
+    description: "Previously pinned F´ revision"
+    required: true
+  new-sha:
+    description: "New F´ revision"
+    required: true
+  commit-count:
+    description: "Number of F´ commits between the old and new revisions"
+    required: true
+outputs:
+  pr-number:
+    description: "Number of the maintained pull request"
+    value: ${{ steps.pr.outputs.pr-number }}
+  pr-url:
+    description: "URL of the maintained pull request"
+    value: ${{ steps.pr.outputs.pr-url }}
+runs:
+  using: "composite"
+  steps:
+    - name: "Push branch and maintain bump PR"
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        BUMP_BRANCH: ${{ inputs.branch }}
+        BASE_BRANCH: ${{ inputs.base }}
+        FPRIME_REPOSITORY: ${{ inputs.fprime-repository }}
+        BUILD_RESULT: ${{ inputs.build-result }}
+        OLD_SHA: ${{ inputs.old-sha }}
+        NEW_SHA: ${{ inputs.new-sha }}
+        COMMIT_COUNT: ${{ inputs.commit-count }}
+        REPOSITORY: ${{ github.repository }}
+        SERVER_URL: ${{ github.server_url }}
+      run: |
+        set -euo pipefail
+        git push --force origin "$BUMP_BRANCH"
+        fprime_url="${SERVER_URL}/${FPRIME_REPOSITORY}"
+        compare_url="${fprime_url}/compare/${OLD_SHA}...${NEW_SHA}"
+        if [ "$BUILD_RESULT" = "success" ]; then
+          build_text="✅ The pinned build passed."
+        else
+          build_text="❌ The pinned build failed. This PR is retained for visibility and requires investigation."
+        fi
+        if [ "$COMMIT_COUNT" = "unknown" ]; then
+          commit_count_text="Unknown (the previous revision was not reachable)"
+        else
+          commit_count_text="$COMMIT_COUNT"
+        fi
+        body="$(cat <<EOF
+        ## F´ submodule bump
+
+        ${build_text}
+
+        | Previous pin | New pin | F´ commits |
+        | --- | --- | ---: |
+        | [\`${OLD_SHA:0:12}\`](${fprime_url}/commit/${OLD_SHA}) | [\`${NEW_SHA:0:12}\`](${fprime_url}/commit/${NEW_SHA}) | ${commit_count_text} |
+
+        [Compare the F´ revisions](${compare_url})
+        EOF
+        )"
+        if [ "$BUILD_RESULT" != "success" ]; then
+          body="${body}
+
+        If this is caused by an fprime-side breakage, pushing a \`pr-<number>\` branch on this repository is the manual escape hatch."
+        fi
+        existing="$(gh pr list --repo "$REPOSITORY" --head "$BUMP_BRANCH" \
+          --base "$BASE_BRANCH" --state open --json number,url --limit 1)"
+        pr_number="$(printf '%s' "$existing" | jq -r '.[0].number // empty')"
+        if [ -n "$pr_number" ]; then
+          gh pr edit "$pr_number" --repo "$REPOSITORY" --title "Bump fprime submodule to ${NEW_SHA:0:12}" --body "$body"
+          if [ "$BUILD_RESULT" = "success" ]; then
+            gh pr edit "$pr_number" --repo "$REPOSITORY" --remove-label bump-broken 2>/dev/null || true
+          else
+            gh pr edit "$pr_number" --repo "$REPOSITORY" --add-label bump-broken
+          fi
+          pr_url="${SERVER_URL}/${REPOSITORY}/pull/${pr_number}"
+        else
+          pr_url="$(gh pr create --repo "$REPOSITORY" --base "$BASE_BRANCH" --head "$BUMP_BRANCH" \
+            --title "Bump fprime submodule to ${NEW_SHA:0:12}" --body "$body")"
+          pr_number="${pr_url##*/}"
+          if [ "$BUILD_RESULT" != "success" ]; then
+            gh pr edit "$pr_number" --repo "$REPOSITORY" --add-label bump-broken
+          fi
+        fi
+        echo "pr-number=${pr_number}" >> "$GITHUB_OUTPUT"
+        echo "pr-url=${pr_url}" >> "$GITHUB_OUTPUT"

@@ -35,6 +35,17 @@ runs:
         find "${GITHUB_WORKSPACE}" -path '*/.git/*' -name '*.lock' -print -delete
         find "${GITHUB_WORKSPACE}" -path '*/.git/objects/*' \( -name 'tmp_pack_*' -o -name 'tmp_obj_*' -o -name 'tmp_idx_*' \) -print -delete
       shell: bash
+    # The overlay step re-creates the overlay path as its own repository. A run
+    # killed mid-overlay leaves it with an unresolvable HEAD, and the target
+    # checkout's `git submodule update` aborts on such a directory rather than
+    # re-cloning it (actions/checkout only self-heals the path it is pointed at).
+    - name: "Remove stale overlay"
+      run: |
+        case "${OVERLAY_PATH}" in ""|.|./|/) echo "Refusing to remove workspace root" >&2; exit 1;; esac
+        rm -rf "${GITHUB_WORKSPACE:?}/${OVERLAY_PATH}"
+      env:
+        OVERLAY_PATH: ${{ inputs.overlay_location != '' && inputs.overlay_location || inputs.fprime_location }}
+      shell: bash
     - name: "Checkout target repository"
       uses: actions/checkout@v5
       with:

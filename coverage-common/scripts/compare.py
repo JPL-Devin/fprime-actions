@@ -181,8 +181,12 @@ def build_comment(
         lines.append("")
 
     if no_ut:
-        lines.append("#### Modules without UTs")
+        lines.append("<details>")
+        lines.append(f"<summary><strong>Modules without UTs</strong> ({len(no_ut)})</summary>")
+        lines.append("")
         lines.append(", ".join(f"`{d.path}`" for d in no_ut))
+        lines.append("")
+        lines.append("</details>")
         lines.append("")
 
     lines.append(marker)

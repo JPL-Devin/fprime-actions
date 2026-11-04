@@ -13,6 +13,10 @@ inputs:
     required: false
     default: ""
     description: "Extra ccache key discriminator (e.g. a matrix value)"
+  cache-mode:
+    required: false
+    default: "read-write"
+    description: "'read-write' (default) or 'read': restore the pip and ccache caches but never save them, for runs that build untrusted code"
 runs:
   using: "composite"
   steps:
@@ -32,7 +36,18 @@ runs:
   - name: "Configure pip cache directory"
     run: echo "PIP_CACHE_DIR=${RUNNER_TEMP}/pip-cache" >> "${GITHUB_ENV}"
     shell: bash
+  # cache-mode: read restores but never saves, so a run that builds an untrusted F´
+  # revision (e.g. a dispatched external-CI run) cannot seed the default-branch cache.
+  - name: "Cache pip downloads (restore only)"
+    if: inputs.cache-mode == 'read'
+    uses: actions/cache/restore@v4
+    with:
+      path: ${{ runner.temp }}/pip-cache
+      key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/requirements.txt') }}
+      restore-keys: |
+        pip-${{ runner.os }}-${{ runner.arch }}-
   - name: "Cache pip downloads"
+    if: inputs.cache-mode != 'read'
     uses: actions/cache@v4
     with:
       path: ${{ runner.temp }}/pip-cache
@@ -44,6 +59,7 @@ runs:
     uses: nasa/fprime-actions/ccache@devel
     with:
       key-suffix: ${{ inputs.ccache-key-suffix }}
+      cache-mode: ${{ inputs.cache-mode }}
   - run: pip3 install setuptools_scm wheel urllib3
     shell: bash
   - name: "Install F´ requirements"

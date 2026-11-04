@@ -16,7 +16,7 @@ inputs:
   cache-mode:
     required: false
     default: "read-write"
-    description: "'read-write' (default) or 'read': restore the pip and ccache caches but never save them, for runs that build untrusted code"
+    description: "'read-write' (default) or 'read': restore the pip and ccache caches but never save them, for runs that build untrusted code. Any other value is treated as 'read'."
 runs:
   using: "composite"
   steps:
@@ -39,7 +39,7 @@ runs:
   # cache-mode: read restores but never saves, so a run that builds an untrusted F´
   # revision (e.g. a dispatched external-CI run) cannot seed the default-branch cache.
   - name: "Cache pip downloads (restore only)"
-    if: inputs.cache-mode == 'read'
+    if: inputs.cache-mode != 'read-write'
     uses: actions/cache/restore@v4
     with:
       path: ${{ runner.temp }}/pip-cache
@@ -47,7 +47,7 @@ runs:
       restore-keys: |
         pip-${{ runner.os }}-${{ runner.arch }}-
   - name: "Cache pip downloads"
-    if: inputs.cache-mode != 'read'
+    if: inputs.cache-mode == 'read-write'
     uses: actions/cache@v4
     with:
       path: ${{ runner.temp }}/pip-cache

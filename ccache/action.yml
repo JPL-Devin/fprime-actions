@@ -10,7 +10,7 @@ inputs:
     required: false
     default: ""
   cache-mode:
-    description: "'read-write' (default) or 'read': restore the cache but never save it, for runs that build untrusted code"
+    description: "'read-write' (default) or 'read': restore the cache but never save it, for runs that build untrusted code. Any other value is treated as 'read'."
     required: false
     default: "read-write"
 runs:
@@ -50,7 +50,7 @@ runs:
   # workflow_dispatch run that builds an untrusted F´ revision must not seed
   # the default-branch cache).
   - name: "Cache compiler output (restore only)"
-    if: github.event_name == 'pull_request' || inputs.cache-mode == 'read'
+    if: github.event_name == 'pull_request' || inputs.cache-mode != 'read-write'
     uses: actions/cache/restore@v4
     with:
       path: ${{ runner.temp }}/ccache
@@ -58,7 +58,7 @@ runs:
       restore-keys: |
         ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}${{ inputs.key-suffix }}-
   - name: "Cache compiler output"
-    if: github.event_name != 'pull_request' && inputs.cache-mode != 'read'
+    if: github.event_name != 'pull_request' && inputs.cache-mode == 'read-write'
     uses: actions/cache@v4
     with:
       path: ${{ runner.temp }}/ccache
